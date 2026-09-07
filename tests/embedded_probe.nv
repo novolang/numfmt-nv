@@ -1,0 +1,84 @@
+// embedded_probe.nv — the package's embedded claim, as firmware that
+// either builds for a Cortex-M or does not.
+//
+// `tests/orbit/test_numfmt_nv.sh` copies this and `src/digits.nv` into
+// a package of their own and runs
+//
+//   novo build --target=nrf52-qemu src/probe.nv
+//
+// which produces a real Cortex-M4 ELF or fails.  Two things are
+// asserted at once.  The TIER: `--target=nrf52-qemu` holds every
+// function it compiles to the embedded surface, so the checker walks
+// the digit algebra and refuses a list literal, a `Str` concatenation,
+// a `Bytes` call or an unbounded `while`.  And the LINK: the unsigned
+// division `udiv` does on a signed 64-bit `Int` lowers to EABI helper
+// calls on a 32-bit core, which either exist in the embedded runtime
+// or do not — a question no amount of host testing asks.
+//
+// THE WHOLE MODULE IS COPIED, host layer and all.  That is worth
+// stating: `digits` carries `@tier(app)` functions that take and
+// return `Bytes`, and until this week one host-tier function anywhere
+// in a compilation unit was an undefined symbol at embedded link time
+// whether or not the firmware called it — which is the split
+// `crypto-nv` was forced into.  A device build no longer emits a
+// host-tier function it cannot reach, so the package needs no split
+// and this probe proves it by not making one.
+//
+// What this deliberately does not do is check the digits.  The host
+// suites own correctness; this program owns "it builds for a device,
+// and the digit algebra links".
+
+use digits
+
+// Write an integer to the UART, one byte at a time, with no buffer
+// anywhere.
+//
+// This IS the embedded use of this package.  There is no `Bytes` on
+// this machine and no allocator to make one with: the number is asked
+// how many digits it has and then asked for them, and each one goes
+// straight out of the port.
+@tier(embedded)
+fn put_int(v: Int, r: Radix) [hw]
+    let mag: Int = if v < 0
+        hal.uart.write_byte(45)
+        0 - v
+    else
+        v
+    let n: Int = digits.digit_count(mag, r)
+    for i in 0 .. n
+        hal.uart.write_byte(digits.digit_byte(mag, r, i))
+
+// Read an integer off the UART with the streaming scanner: four
+// scalars on the stack, one byte at a time, and no buffer to overflow.
+@tier(embedded)
+fn scan_bytes() -> Int
+    var s: IntScan = digits.scan(Dec, true)
+    // A fixed input rather than a real read, so the probe is a build
+    // question and not a hardware one.  What is being compiled is the
+    // scanner's state machine.
+    for c in 0 .. 4
+        s = s.push(48 + c)
+    let done: IntParse = s.finish()
+    if done.is_ok()
+        done.num
+    else
+        -1
+
+@tier(rt)
+fn main() [hw, time]
+    bsp.board.init()
+    let dec: Radix = Dec
+    let hex: Radix = HexUpper
+    // The width companions are part of the embedded surface too: a
+    // firmware sizing a fixed field asks before it writes.
+    let width: Int = digits.uint_len(48879, digits.fmt(hex).zero_padded(8))
+    if scan_bytes() == 123 and width == 8
+        hal.uart.write("PASS: numfmt-embedded ")
+        put_int(-90210, dec)
+        hal.uart.write_byte(32)
+        put_int(48879, hex)
+        hal.uart.write_byte(10)
+    else
+        hal.uart.write("FAIL: numfmt-embedded\n")
+    loop
+        core.rt.sleep_ms(1000)

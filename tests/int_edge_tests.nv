@@ -1,0 +1,372 @@
+// int_edge_tests.nv — the parts of the integer surface a vector corpus
+// cannot state: the width constants, the padding layout, the four
+// failure reasons and where they say they were found, and the
+// streaming scanner.
+//
+// The corpus in `int_vector_tests.nv` answers "does it write the right
+// digits".  This file answers "does it write them in the right place,
+// and does it say the right thing when it cannot".
+
+use std.bytes
+use std.str
+use std.test
+use digits
+use numstr
+
+// ── the width constants are exact, not generous ──────────────────────
+
+@test
+fn test_the_max_constants_are_measured_not_asserted() [io]
+    // Each constant is checked against the widest value in its form,
+    // written out and counted.  A constant that was a guess is a
+    // buffer that is one byte too small on exactly one input.
+    test.case("unsigned decimal")
+    test.assert_eq(str.from_int(digits.uint_len(-1, digits.fmt(Dec))),
+                   str.from_int(digits.MAX_UINT_DEC))
+    test.case("unsigned octal")
+    test.assert_eq(str.from_int(digits.uint_len(-1, digits.fmt(Oct))),
+                   str.from_int(digits.MAX_UINT_OCT))
+    test.case("unsigned hexadecimal")
+    test.assert_eq(str.from_int(digits.uint_len(-1, digits.fmt(Hex))),
+                   str.from_int(digits.MAX_UINT_HEX))
+    test.case("unsigned binary")
+    test.assert_eq(str.from_int(digits.uint_len(-1, digits.fmt(Bin))),
+                   str.from_int(digits.MAX_UINT_BIN))
+    // `Int.min` is the widest signed value in every radix: its
+    // magnitude is `2^63`, one more than `Int.max`'s.
+    let low = -9223372036854775808
+    test.case("signed decimal")
+    test.assert_eq(str.from_int(digits.int_len(low, digits.fmt(Dec))),
+                   str.from_int(digits.MAX_INT_DEC))
+    test.case("signed octal")
+    test.assert_eq(str.from_int(digits.int_len(low, digits.fmt(Oct))),
+                   str.from_int(digits.MAX_INT_OCT))
+    test.case("signed hexadecimal")
+    test.assert_eq(str.from_int(digits.int_len(low, digits.fmt(Hex))),
+                   str.from_int(digits.MAX_INT_HEX))
+    test.case("signed binary")
+    test.assert_eq(str.from_int(digits.int_len(low, digits.fmt(Bin))),
+                   str.from_int(digits.MAX_INT_BIN))
+    test.case("the widest of them all")
+    test.assert_eq(str.from_int(digits.MAX_INT_ANY), str.from_int(digits.MAX_INT_BIN))
+
+@test
+fn test_the_length_promised_is_the_length_written() [io]
+    // `*_len` and `*_into` are two calls with one answer between them.
+    // If they ever disagree the buffer carries a trailing NUL and
+    // every consumer sees a string one byte too long — which is how
+    // this suite found the exponent-sign bug in the float writer.
+    let vals = [0, 1, -1, 9, 10, 255, 65535, -65536, 1000000,
+                9223372036854775807, -9223372036854775808]
+    let forms = [digits.fmt(Dec), digits.fmt(Bin), digits.fmt(Oct),
+                 digits.fmt(Hex), digits.fmt(HexUpper),
+                 digits.fmt(Dec).padded(12), digits.fmt(Hex).zero_padded(16)]
+    for i in 0 .. vals.len()
+        for j in 0 .. forms.len()
+            let v = vals[i]
+            let f = forms[j]
+            test.case(str.from_int(v))
+            test.assert_eq(str.from_int(str.len(numstr.int_to_str(v, f))),
+                           str.from_int(digits.int_len(v, f)))
+            test.assert_eq(str.from_int(str.len(numstr.uint_to_str(v, f))),
+                           str.from_int(digits.uint_len(v, f)))
+
+// ── padding ──────────────────────────────────────────────────────────
+
+@test
+fn test_space_padding_puts_the_sign_next_to_the_digits() [io]
+    let f = digits.fmt(Dec).padded(6)
+    test.case("negative")
+    test.assert_eq(numstr.int_to_str(-42, f), "   -42")
+    test.case("positive")
+    test.assert_eq(numstr.int_to_str(42, f), "    42")
+    test.case("exactly the width")
+    test.assert_eq(numstr.int_to_str(-12345, f), "-12345")
+    test.case("wider than the width — a floor, not a field")
+    test.assert_eq(numstr.int_to_str(-1234567, f), "-1234567")
+
+@test
+fn test_zero_padding_puts_the_zeros_after_the_sign() [io]
+    // `0-42` is not a number, which is why the two paddings differ.
+    let f = digits.fmt(Dec).zero_padded(6)
+    test.case("negative")
+    test.assert_eq(numstr.int_to_str(-42, f), "-00042")
+    test.case("positive")
+    test.assert_eq(numstr.int_to_str(42, f), "000042")
+    test.case("the register-dump form")
+    test.assert_eq(numstr.uint_to_str(48879, digits.fmt(HexUpper).zero_padded(8)),
+                   "0000BEEF")
+
+@test
+fn test_a_width_of_zero_is_no_padding() [io]
+    test.case("dec")
+    test.assert_eq(numstr.int_to_str(7, digits.fmt(Dec).padded(0)), "7")
+    test.case("hex")
+    test.assert_eq(numstr.int_to_str(7, digits.fmt(Hex).zero_padded(0)), "7")
+
+// ── writing into a caller's buffer, at an offset ─────────────────────
+
+@test
+fn test_the_writers_write_where_they_are_told() [io]
+    // The point of the package: a frame the caller already owns, with
+    // a number dropped into the middle of it.
+    var buf = bytes.zeros(11)
+    buf = bytes.copy_into(buf, 0, bytes.from_str("id=____;ok\n"), 0, 11)
+    let f = digits.fmt(Dec).zero_padded(4)
+    buf = digits.uint_into(buf, 3, 42, f)
+    test.case("the number landed at the offset")
+    test.assert_eq(bytes.to_str(buf), "id=0042;ok\n")
+
+@test
+fn test_digit_byte_walks_the_number_from_the_left() [io]
+    // The firmware form: no buffer at all, one byte at a time.
+    let n = 90210
+    var text = ""
+    for i in 0 .. digits.digit_count(n, Dec)
+        text = text + str.from_char(digits.digit_byte(n, Dec, i))
+    test.case("reassembled from single digits")
+    test.assert_eq(text, "90210")
+    test.case("past the end is -1, not a panic")
+    test.assert_eq(str.from_int(digits.digit_byte(n, Dec, 5)), "-1")
+    test.assert_eq(str.from_int(digits.digit_byte(n, Dec, -1)), "-1")
+
+@test
+fn test_digit_count_turns_over_at_every_power() [io]
+    // One digit more at the power, one fewer just below it.
+    test.case("decimal")
+    test.assert_eq(str.from_int(digits.digit_count(999, Dec)), "3")
+    test.assert_eq(str.from_int(digits.digit_count(1000, Dec)), "4")
+    test.case("hexadecimal")
+    test.assert_eq(str.from_int(digits.digit_count(255, Hex)), "2")
+    test.assert_eq(str.from_int(digits.digit_count(256, Hex)), "3")
+    test.case("octal")
+    test.assert_eq(str.from_int(digits.digit_count(63, Oct)), "2")
+    test.assert_eq(str.from_int(digits.digit_count(64, Oct)), "3")
+    test.case("binary")
+    test.assert_eq(str.from_int(digits.digit_count(1, Bin)), "1")
+    test.assert_eq(str.from_int(digits.digit_count(2, Bin)), "2")
+    test.case("zero is one digit")
+    test.assert_eq(str.from_int(digits.digit_count(0, Dec)), "1")
+    test.case("the full width, read as unsigned")
+    test.assert_eq(str.from_int(digits.digit_count(-1, Bin)), "64")
+
+@test
+fn test_the_radix_table() [io]
+    test.case("bases")
+    test.assert_eq(str.from_int(digits.base_of(Bin)), "2")
+    test.assert_eq(str.from_int(digits.base_of(Oct)), "8")
+    test.assert_eq(str.from_int(digits.base_of(Dec)), "10")
+    test.assert_eq(str.from_int(digits.base_of(Hex)), "16")
+    test.assert_eq(str.from_int(digits.base_of(HexUpper)), "16")
+    test.case("case")
+    test.assert(digits.is_upper(HexUpper))
+    test.assert(not digits.is_upper(Hex))
+    test.assert(not digits.is_upper(Dec))
+
+// ── parsing: the four reasons, and where they were found ─────────────
+
+@test
+fn test_an_empty_input_is_empty_not_zero() [io]
+    // The distinction a bare option throws away: a missing field and a
+    // field holding `0` are different, and only one of them is a bug.
+    test.case("nothing at all")
+    let a = digits.parse_int("", Dec)
+    test.assert(not a.is_ok())
+    match a.error()
+        Some(Empty) => test.assert(true)
+        _           => test.assert(false)
+    test.case("a sign and nothing after it")
+    let b = digits.parse_int("-", Dec)
+    test.assert(not b.is_ok())
+    match b.error()
+        Some(Empty) => test.assert(true)
+        _           => test.assert(false)
+
+@test
+fn test_a_bad_digit_names_its_offset() [io]
+    let r = digits.parse_int("12x4", Dec)
+    test.case("not ok")
+    test.assert(not r.is_ok())
+    test.case("the reason")
+    match r.error()
+        Some(BadDigit) => test.assert(true)
+        _              => test.assert(false)
+    test.case("the offset of the offending byte")
+    test.assert_eq(str.from_int(r.at), "2")
+    // A digit of one radix is not a digit of another.
+    test.case("9 is not an octal digit")
+    let o = digits.parse_int("189", Oct)
+    test.assert(not o.is_ok())
+    test.assert_eq(str.from_int(o.at), "1")
+    test.case("g is not a hex digit")
+    let h = digits.parse_int("beg", Hex)
+    test.assert(not h.is_ok())
+    test.assert_eq(str.from_int(h.at), "2")
+
+@test
+fn test_overflow_is_reported_at_the_exact_boundary() [io]
+    test.case("Int.max")
+    test.assert(digits.parse_int("9223372036854775807", Dec).is_ok())
+    test.assert_eq(str.from_int(digits.parse_int("9223372036854775807", Dec).num),
+                   "9223372036854775807")
+    test.case("one past Int.max")
+    let over = digits.parse_int("9223372036854775808", Dec)
+    test.assert(not over.is_ok())
+    match over.error()
+        Some(Overflow) => test.assert(true)
+        _              => test.assert(false)
+    test.case("Int.min — the magnitude no positive Int holds")
+    test.assert(digits.parse_int("-9223372036854775808", Dec).is_ok())
+    test.assert_eq(str.from_int(digits.parse_int("-9223372036854775808", Dec).num),
+                   "-9223372036854775808")
+    test.case("one past Int.min")
+    test.assert(not digits.parse_int("-9223372036854775809", Dec).is_ok())
+    test.case("the unsigned ceiling")
+    test.assert(digits.parse_uint("18446744073709551615", Dec).is_ok())
+    test.assert_eq(str.from_int(digits.parse_uint("18446744073709551615", Dec).num),
+                   "-1")
+    test.case("one past the unsigned ceiling")
+    test.assert(not digits.parse_uint("18446744073709551616", Dec).is_ok())
+    test.case("sixty-four ones is the unsigned ceiling in binary")
+    test.assert(digits.parse_uint(
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        Bin).is_ok())
+    test.case("sixty-five is not")
+    test.assert(not digits.parse_uint(
+        "11111111111111111111111111111111111111111111111111111111111111111",
+        Bin).is_ok())
+
+@test
+fn test_trailing_bytes_are_a_reason_of_their_own() [io]
+    // Not a bad digit: the number ended cleanly and something else
+    // followed, which a caller reading a unit suffix wants to know.
+    let r = digits.parse_int("42kg", Dec)
+    test.case("not ok")
+    test.assert(not r.is_ok())
+    test.case("the reason")
+    match r.error()
+        Some(BadDigit) => test.assert(true)
+        _              => test.assert(false)
+    test.case("and the offset says where to carry on reading")
+    test.assert_eq(str.from_int(r.at), "2")
+
+@test
+fn test_an_unsigned_parse_refuses_a_sign() [io]
+    let r = digits.parse_uint("-1", Dec)
+    test.case("not ok")
+    test.assert(not r.is_ok())
+    test.assert_eq(str.from_int(r.at), "0")
+    test.case("but a plus is fine on both")
+    test.assert_eq(str.from_int(digits.parse_uint("+7", Dec).num), "7")
+    test.assert_eq(str.from_int(digits.parse_int("+7", Dec).num), "7")
+
+@test
+fn test_hexadecimal_reads_either_case() [io]
+    // The formatter writes one case; refusing the other would be
+    // refusing its own output's twin.
+    test.case("lower")
+    test.assert_eq(str.from_int(digits.parse_int("beef", Hex).num), "48879")
+    test.case("upper")
+    test.assert_eq(str.from_int(digits.parse_int("BEEF", HexUpper).num), "48879")
+    test.case("mixed, in either spelling of the radix")
+    test.assert_eq(str.from_int(digits.parse_int("bEeF", Hex).num), "48879")
+    test.assert_eq(str.from_int(digits.parse_int("BeEf", HexUpper).num), "48879")
+
+@test
+fn test_value_or_hands_back_the_fallback() [io]
+    test.case("on success the value")
+    test.assert_eq(str.from_int(digits.parse_int("7", Dec).value_or(-1)), "7")
+    test.case("on failure the fallback")
+    test.assert_eq(str.from_int(digits.parse_int("x", Dec).value_or(-1)), "-1")
+    test.case("and error() is null when nothing went wrong")
+    match digits.parse_int("7", Dec).error()
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+// ── the streaming scanner ────────────────────────────────────────────
+
+@test
+fn test_the_scanner_reads_a_byte_at_a_time() [io]
+    // The shape a UART reader uses: no buffer, four scalars on the
+    // stack, and an answer whenever it is asked for one.
+    var s = digits.scan(Dec, true)
+    let text = "-1234"
+    for i in 0 .. str.len(text)
+        s = s.push(str.byte_at(text, i) ?? -1)
+    test.case("the whole number")
+    test.assert(s.finish().is_ok())
+    test.assert_eq(str.from_int(s.finish().num), "-1234")
+
+@test
+fn test_the_scanner_answers_at_every_prefix() [io]
+    // `finish` does not end the scan, so "the number so far" is a
+    // question that can be asked after every byte.
+    var s = digits.scan(Dec, false)
+    let want = ["1", "12", "123"]
+    let text = "123"
+    for i in 0 .. str.len(text)
+        s = s.push(str.byte_at(text, i) ?? -1)
+        test.case(want[i])
+        test.assert_eq(str.from_int(s.finish().num), want[i])
+
+@test
+fn test_the_first_error_sticks() [io]
+    // So a caller may push a whole buffer and ask once, rather than
+    // checking after every byte.
+    var s = digits.scan(Dec, true)
+    let text = "1x23"
+    for i in 0 .. str.len(text)
+        s = s.push(str.byte_at(text, i) ?? -1)
+    test.case("still the first failure")
+    test.assert(not s.is_ok())
+    test.assert_eq(str.from_int(s.finish().at), "1")
+
+@test
+fn test_parse_int_bytes_reads_a_field_where_it_lies() [io]
+    // No slice, no string: the number is parsed inside the frame.
+    let frame = bytes.from_str("hdr|00042|tail")
+    test.case("signed")
+    let r = digits.parse_int_bytes(frame, 4, 5, Dec, true)
+    test.assert(r.is_ok())
+    test.assert_eq(str.from_int(r.num), "42")
+    test.case("unsigned")
+    let u = digits.parse_int_bytes(frame, 4, 5, Dec, false)
+    test.assert_eq(str.from_int(u.num), "42")
+    test.case("a zero-length field is Empty")
+    test.assert(not digits.parse_int_bytes(frame, 4, 0, Dec, true).is_ok())
+
+// ── the round trip ───────────────────────────────────────────────────
+
+@test
+fn test_format_parse_format_is_the_identity() [io]
+    // Every radix, both signednesses, over the boundary set.  A
+    // formatter and a parser that disagree by one digit somewhere is
+    // exactly what this catches, and neither suite alone would.
+    let vals = [0, 1, -1, 7, -7, 10, -10, 255, 256, 65535, 65536,
+                1000000000, -1000000000, 4611686018427387904,
+                9223372036854775807, -9223372036854775808, -2]
+    let radices = [Dec, Bin, Oct, Hex, HexUpper]
+    for i in 0 .. vals.len()
+        for j in 0 .. radices.len()
+            let v = vals[i]
+            let r = radices[j]
+            let f = digits.fmt(r)
+            test.case(str.from_int(v))
+            let signed = digits.parse_int(numstr.int_to_str(v, f), r)
+            test.assert(signed.is_ok())
+            test.assert_eq(str.from_int(signed.num), str.from_int(v))
+            let unsigned = digits.parse_uint(numstr.uint_to_str(v, f), r)
+            test.assert(unsigned.is_ok())
+            test.assert_eq(str.from_int(unsigned.num), str.from_int(v))
+
+@test
+fn test_a_padded_format_still_parses_when_the_padding_is_zeros() [io]
+    // Zero padding is part of the number; space padding is not, and
+    // the parser says so rather than trimming quietly.
+    let f = digits.fmt(Dec).zero_padded(8)
+    test.case("zero-padded round-trips")
+    test.assert_eq(str.from_int(digits.parse_int(numstr.int_to_str(-42, f), Dec).num),
+                   "-42")
+    test.case("space-padded does not, and names the space")
+    let padded = numstr.int_to_str(-42, digits.fmt(Dec).padded(8))
+    test.assert(not digits.parse_int(padded, Dec).is_ok())

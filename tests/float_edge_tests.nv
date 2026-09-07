@@ -1,0 +1,287 @@
+// float_edge_tests.nv — the parts of the float surface a vector corpus
+// cannot state: the three values that are not numbers, the two zeros,
+// the width constants, and where `fixed_into` stops being fixed-point.
+//
+// The corpus in `float_vector_tests.nv` answers "does it write the
+// digits CPython writes".  This file answers what happens at the edges
+// of the definition, where CPython's spelling and this package's are
+// deliberately different or where there are no digits at all.
+
+use std.bytes
+use std.math
+use std.str
+use std.test
+use real
+use numstr
+
+// ── the values that are not numbers ──────────────────────────────────
+
+@test
+fn test_the_three_words() [io]
+    // These are the only output this module writes that `parse_float`
+    // will not read back, and deliberately: a protocol either forbids
+    // `nan` or defines its own spelling, and silently accepting one is
+    // how a nan gets into a temperature reading.
+    test.case("nan")
+    test.assert_eq(numstr.float_to_str(math.nan()), "nan")
+    test.case("inf")
+    test.assert_eq(numstr.float_to_str(math.infinity()), "inf")
+    test.case("-inf")
+    test.assert_eq(numstr.float_to_str(0.0 - math.infinity()), "-inf")
+    test.case("and the parser refuses all three")
+    test.assert(not real.parse_float("nan").is_ok())
+    test.assert(not real.parse_float("inf").is_ok())
+    test.assert(not real.parse_float("-inf").is_ok())
+
+@test
+fn test_the_words_are_the_length_they_say() [io]
+    test.case("nan")
+    test.assert_eq(str.from_int(real.shortest_len(math.nan())), "3")
+    test.case("inf")
+    test.assert_eq(str.from_int(real.shortest_len(math.infinity())), "3")
+    test.case("-inf")
+    test.assert_eq(str.from_int(real.shortest_len(0.0 - math.infinity())), "4")
+
+@test
+fn test_is_finite_and_is_negative() [io]
+    test.case("finite")
+    test.assert(real.is_finite(0.0))
+    test.assert(real.is_finite(1.7976931348623157e+308))
+    test.assert(not real.is_finite(math.infinity()))
+    test.assert(not real.is_finite(math.nan()))
+    test.case("negative, including the zero a comparison cannot see")
+    test.assert(real.is_negative(-0.0))
+    test.assert(not real.is_negative(0.0))
+    test.assert(real.is_negative(0.0 - math.infinity()))
+    test.assert(not real.is_negative(math.nan()))
+
+// ── the two zeros ────────────────────────────────────────────────────
+
+@test
+fn test_negative_zero_keeps_its_sign() [io]
+    // A formatter that dropped it would not round-trip, and the sign
+    // of a zero is what a later division by it depends on.
+    test.case("-0")
+    test.assert_eq(numstr.float_to_str(-0.0), "-0")
+    test.case("0")
+    test.assert_eq(numstr.float_to_str(0.0), "0")
+    test.case("and it reads back as a negative zero")
+    let z = real.parse_float("-0").num
+    test.assert(z == 0.0)
+    test.assert(real.is_negative(z))
+
+@test
+fn test_the_decomposition_of_the_values_that_have_none() [io]
+    // Zero, the infinities and the nans answer zero for both halves —
+    // there is no `m * 2^e` for any of them, and answering something
+    // that looked like one would be worse than answering nothing.
+    let vals = [0.0, -0.0, math.infinity(), 0.0 - math.infinity(), math.nan()]
+    for i in 0 .. vals.len()
+        test.case(str.from_int(i))
+        test.assert_eq(str.from_int(real.significand(vals[i])), "0")
+        test.assert_eq(str.from_int(real.binary_exponent(vals[i])), "0")
+
+// ── the width constants ──────────────────────────────────────────────
+
+@test
+fn test_no_shortest_form_is_wider_than_the_constant() [io]
+    // Measured over the values that push each part of the form to its
+    // widest: seventeen digits, a three-digit exponent, and a sign.
+    let vals = [1.7976931348623157e+308, -1.7976931348623157e+308,
+                4.94065645841247e-324, -4.94065645841247e-324, 2.2250738585072014e-308,
+                -2.2250738585072014e-308, 1.2345678901234567e-308,
+                -1.2345678901234567e-308, 0.1, -0.1, 0.0, -0.0,
+                math.nan(), math.infinity(), 0.0 - math.infinity()]
+    for i in 0 .. vals.len()
+        let text = numstr.float_to_str(vals[i])
+        test.case(text)
+        test.assert_eq(str.from_int(str.len(text)),
+                       str.from_int(real.shortest_len(vals[i])))
+        test.assert(str.len(text) <= real.MAX_SHORTEST)
+
+@test
+fn test_no_fixed_form_is_wider_than_the_constant() [io]
+    let vals = [1.0e+18, -1.0e+18,
+                0.1, -0.1, 0.0, -0.0, 123456.789, -1.0e+17]
+    for i in 0 .. vals.len()
+        for d in 0 .. 18
+            let text = numstr.fixed_to_str(vals[i], d)
+            test.case(text)
+            test.assert_eq(str.from_int(str.len(text)),
+                           str.from_int(real.fixed_len(vals[i], d)))
+            test.assert(str.len(text) <= real.MAX_FIXED)
+
+// ── fixed decimals ───────────────────────────────────────────────────
+
+@test
+fn test_the_fraction_keeps_its_leading_zeros() [io]
+    // `0.05` at two decimals is a `5` with a `0` in front of it, and
+    // the `0` is the whole point of the form.
+    test.case("0.05")
+    test.assert_eq(numstr.fixed_to_str(0.05, 2), "0.05")
+    test.case("0.005")
+    test.assert_eq(numstr.fixed_to_str(0.005, 3), "0.005")
+    test.case("1.005")
+    test.assert_eq(numstr.fixed_to_str(1.005, 3), "1.005")
+
+@test
+fn test_zero_decimals_writes_no_point() [io]
+    test.case("3")
+    test.assert_eq(numstr.fixed_to_str(3.4, 0), "3")
+    test.case("4")
+    test.assert_eq(numstr.fixed_to_str(3.6, 0), "4")
+    test.case("-4")
+    test.assert_eq(numstr.fixed_to_str(-3.6, 0), "-4")
+
+@test
+fn test_a_tie_goes_to_the_even_digit() [io]
+    // The rule `printf("%.0f")` follows, and the reason `0.5` is `0`.
+    test.case("0.5")
+    test.assert_eq(numstr.fixed_to_str(0.5, 0), "0")
+    test.case("1.5")
+    test.assert_eq(numstr.fixed_to_str(1.5, 0), "2")
+    test.case("2.5")
+    test.assert_eq(numstr.fixed_to_str(2.5, 0), "2")
+    test.case("3.5")
+    test.assert_eq(numstr.fixed_to_str(3.5, 0), "4")
+
+@test
+fn test_decimals_are_clamped_not_refused() [io]
+    test.case("negative reads as zero")
+    test.assert_eq(numstr.fixed_to_str(3.6, -4), "4")
+    test.case("more than seventeen is seventeen")
+    let a = numstr.fixed_to_str(0.1, 40)
+    let b = numstr.fixed_to_str(0.1, real.MAX_DECIMALS)
+    test.assert_eq(a, b)
+
+@test
+fn test_above_the_ceiling_the_shortest_form_is_written() [io]
+    // A double at or above `1e18` has no fractional part — the gap
+    // between neighbouring doubles up there is already bigger than one
+    // — so writing a point and a run of zeros would be dressing up
+    // precision that is not in the number.
+    test.case("1e18 at three decimals is past the line")
+    test.assert_eq(numstr.fixed_to_str(1.0e+18, 3), "1e18")
+    test.case("but at none it is not — the line is on the SCALED value")
+    test.assert_eq(numstr.fixed_to_str(1.0e+18, 0), "1000000000000000000")
+    test.case("1e23 is past it at every precision")
+    test.assert_eq(numstr.fixed_to_str(1.0e+23, 3), "1e23")
+    test.assert_eq(numstr.fixed_to_str(1.0e+23, 0), "1e23")
+    test.case("the words pass through")
+    test.assert_eq(numstr.fixed_to_str(math.nan(), 2), "nan")
+    test.assert_eq(numstr.fixed_to_str(math.infinity(), 2), "inf")
+
+// ── parsing ──────────────────────────────────────────────────────────
+
+@test
+fn test_the_grammar_it_accepts() [io]
+    test.case("a bare integer")
+    test.assert(real.parse_float("42").num == 42.0)
+    test.case("a leading point")
+    test.assert(real.parse_float(".5").num == 0.5)
+    test.case("a trailing point")
+    test.assert(real.parse_float("5.").num == 5.0)
+    test.case("both signs")
+    test.assert(real.parse_float("-1.5").num == -1.5)
+    test.assert(real.parse_float("+1.5").num == 1.5)
+    test.case("either case of exponent, with and without a sign")
+    test.assert(real.parse_float("1e3").num == 1000.0)
+    test.assert(real.parse_float("1E3").num == 1000.0)
+    test.assert(real.parse_float("1e+3").num == 1000.0)
+    test.assert(real.parse_float("1e-3").num == 0.001)
+    test.case("leading zeros are digits like any other")
+    test.assert(real.parse_float("000.5").num == 0.5)
+
+@test
+fn test_the_grammar_it_refuses() [io]
+    test.case("empty")
+    let a = real.parse_float("")
+    test.assert(not a.is_ok())
+    match a.error()
+        Some(Empty) => test.assert(true)
+        _           => test.assert(false)
+    test.case("a sign with nothing after it")
+    test.assert(not real.parse_float("-").is_ok())
+    test.case("a point with nothing on either side")
+    test.assert(not real.parse_float(".").is_ok())
+    test.case("a second point is trailing input, at its own offset")
+    let b = real.parse_float("1.2.3")
+    test.assert(not b.is_ok())
+    match b.error()
+        Some(Trailing) => test.assert(true)
+        _              => test.assert(false)
+    test.assert_eq(str.from_int(b.at), "3")
+    test.case("a bare `e` is trailing input, not an exponent")
+    let c = real.parse_float("1e")
+    test.assert(not c.is_ok())
+    test.assert_eq(str.from_int(c.at), "1")
+    test.case("a unit suffix says where to carry on reading")
+    let d = real.parse_float("36.6C")
+    test.assert(not d.is_ok())
+    test.assert_eq(str.from_int(d.at), "4")
+
+@test
+fn test_the_ends_of_the_range() [io]
+    test.case("an exponent past the top is an infinity, not an error")
+    let big = real.parse_float("1e400")
+    test.assert(big.is_ok())
+    test.assert(math.is_inf(big.num))
+    test.case("and past the bottom is zero")
+    let small = real.parse_float("1e-400")
+    test.assert(small.is_ok())
+    test.assert(small.num == 0.0)
+    test.case("the smallest subnormal")
+    test.assert(real.parse_float("5e-324").num == 4.94065645841247e-324)
+    test.case("the largest double")
+    test.assert(real.parse_float("1.7976931348623157e308").num
+                == 1.7976931348623157e+308)
+
+@test
+fn test_value_or_hands_back_the_fallback() [io]
+    test.case("on success the value")
+    test.assert(real.parse_float("2.5").value_or(-1.0) == 2.5)
+    test.case("on failure the fallback")
+    test.assert(real.parse_float("x").value_or(-1.0) == -1.0)
+    test.case("and error() is null when nothing went wrong")
+    match real.parse_float("2.5").error()
+        Some(_) => test.assert(false)
+        None    => test.assert(true)
+
+@test
+fn test_parse_float_bytes_reads_a_field_where_it_lies() [io]
+    let frame = bytes.from_str("t=36.6;h=41")
+    test.case("the temperature")
+    let r = real.parse_float_bytes(frame, 2, 4)
+    test.assert(r.is_ok())
+    test.assert(r.num == 36.6)
+    test.case("the humidity")
+    test.assert(real.parse_float_bytes(frame, 9, 2).num == 41.0)
+
+// ── writing into a caller's buffer, at an offset ─────────────────────
+
+@test
+fn test_the_writers_write_where_they_are_told() [io]
+    var buf = bytes.zeros(13)
+    buf = bytes.copy_into(buf, 0, bytes.from_str("t=_______;ok\n"), 0, 13)
+    buf = real.fixed_into(buf, 2, -12.75, 3)
+    test.case("the number landed at the offset")
+    test.assert_eq(bytes.to_str(buf), "t=-12.750;ok\n")
+
+@test
+fn test_the_form_switches_where_a_reader_stops_counting_zeros() [io]
+    // The plain form while the point sits in or beside the digits, the
+    // `e` form once it does not — the same cut CPython's `repr` makes.
+    test.case("plain, with the point inside")
+    test.assert_eq(numstr.float_to_str(1234.5), "1234.5")
+    test.case("plain, with the zeros written out")
+    test.assert_eq(numstr.float_to_str(100000.0), "100000")
+    test.case("plain, with three leading zeros")
+    test.assert_eq(numstr.float_to_str(0.0001), "0.0001")
+    test.case("and the e form once there are four")
+    test.assert_eq(numstr.float_to_str(1.0e-05), "1e-5")
+    test.case("plain up to sixteen digits before the point")
+    test.assert_eq(numstr.float_to_str(1.0e+15), "1000000000000000")
+    test.case("and the e form at seventeen")
+    test.assert_eq(numstr.float_to_str(1.0e+16), "1e16")
+    test.case("the e form at the top")
+    test.assert_eq(numstr.float_to_str(1.0e+23), "1e23")

@@ -1,0 +1,1316 @@
+// real.nv — floats written into a buffer the caller already owns, and
+// read back out of one.  Nothing in this module allocates.
+//
+// WHAT IS HONESTLY IMPLEMENTED HERE, AND WHAT IS NOT
+//
+// This package is named after `itoa` and `ryu`.  The integer half is
+// `itoa`'s job done in full.  The float half is NOT ryu, and saying so
+// plainly is worth more than the claim would be.
+//
+// Ryu decides the shortest round-tripping decimal with a proof, using
+// 128-bit multiplication against a table of 617 split powers of five.
+// Novo's `Int` is 64 bits and the language has no 128-bit multiply and
+// no float-to-bits reinterpretation, so that algorithm cannot be
+// written here today — filed against the toolchain as
+// `float-bit-reinterpretation-missing`.
+//
+// What is here instead:
+//
+//   `shortest_into`   the shortest decimal, from 1 to 17 significant
+//                     digits, that this module's own `parse_float`
+//                     maps back to the value it was given.  Candidates
+//                     are generated at increasing precision and each
+//                     is VERIFIED by parsing it back, so the output
+//                     always round-trips through this package.  It is
+//                     shortest in fact for every value tested (see the
+//                     package README for the measured agreement with
+//                     CPython's `repr`), but it is not shortest by
+//                     construction the way ryu's is.
+//
+//   `fixed_into`      a fixed number of decimals, rounded to nearest
+//                     with ties to even, for `|x| < 1e18`.  Above that
+//                     a double has no fractional part worth printing
+//                     and the shortest form is written instead.
+//
+//   `parse_float`     nearest representable, EXACTLY on Clinger's fast
+//                     path (a significand below 2^53 and a decimal
+//                     exponent the scaling stays exact through), and
+//                     within about one unit in the last place outside
+//                     it.
+//
+// The exactness that IS here is the decomposition: `significand` and
+// `binary_exponent` recover the exact `m * 2^e` a double holds, by
+// scaling with powers of two, which IEEE-754 does without error.
+// Everything else is built on those two.
+//
+// WHAT ALLOCATES
+//
+// Nothing.  `numstr` is the module that returns a `Str`, and it is the
+// only one that asks the allocator for anything.
+//
+// Unlike `digits`, nothing here carries `@tier(embedded)`: the tier
+// admits `float.to_int` and `int.to_float` but not `math.is_inf` or
+// `math.floor`, and a formatter that cannot recognise an infinity is
+// not one to put in firmware.  The whole module is `@tier(app)`.
+
+use std.bytes
+use std.int
+use std.math
+use std.str
+use digits
+
+// ── the bytes this module writes ─────────────────────────────────────
+
+const D_ZERO: Int = 48
+const D_NINE: Int = 57
+const MINUS: Int = 45
+const PLUS: Int = 43
+const DOT: Int = 46
+const LOWER_E: Int = 101
+
+// Minus one, for the one negation that must keep the sign of a zero.
+const NEG_ONE: Float = -1.0
+
+// The two powers of two the decomposition brackets a significand
+// between: `2^52` and `2^53`.  Written as floats because that is where
+// they are compared.
+const TWO_52: Float = 4503599627370496.0
+const TWO_53: Float = 9007199254740992.0
+// `2^21`, the ceiling under which a coarse 32-bit scale-up is safe:
+// anything below it stays below `2^53` after being multiplied by
+// `2^32`.
+const TWO_21: Float = 2097152.0
+const TWO_32: Float = 4294967296.0
+
+// The most significant digits a double's shortest decimal ever needs.
+const MAX_SIG_DIGITS: Int = 17
+
+// Where the plain form stops and the `e` form starts, as the position
+// of the decimal point counted from the left of the digits.
+//
+// These are CPython's cuts, and they are a readability judgement
+// rather than a rule about doubles: `0.0001` is a number a reader can
+// see, `0.00001` is a number a reader counts zeros in, and `1e-5` is
+// the number again.  `repr` switches at exactly these two places, and
+// agreeing with the language most readers will compare against is
+// worth more than a cut of this package's own.
+const PLAIN_MAX: Int = 16
+const PLAIN_MIN: Int = -4
+
+// The ceiling of `fixed_into`'s fixed-decimal form: the value, scaled
+// by the decimals asked for, has to be an integer an `Int` holds.  The
+// bound is on the SCALED value rather than on the value, because that
+// is the quantity the arithmetic actually forms — `1e17` at two
+// decimals overflows where `1e17` at none does not.
+const FIXED_SCALED_CEILING: Float = 9.0e+18
+
+// ── the widest answer each form can produce ──────────────────────────
+
+// `-1.2345678901234567e-308` — a sign, one digit, a point, sixteen
+// more digits and a five-byte exponent.  No `shortest_into` call
+// writes more than this.
+pub const MAX_SHORTEST: Int = 24
+
+// No `fixed_into` call writes more than this, at any `decimals`.
+//
+// The fixed form itself is at most twenty-one bytes: the digits either
+// side of the point add up to nineteen, because their scaled value has
+// to fit in an `Int`, and the sign and the point make two more.  The
+// constant is twenty-four because a value too large for the fixed form
+// is written in the shortest form instead, and that one reaches
+// `MAX_SHORTEST`.
+pub const MAX_FIXED: Int = 24
+
+// The most decimals `fixed_into` writes.  A larger `decimals` is
+// clamped to it: a double carries about seventeen significant digits
+// and everything past them is the conversion's own noise, not the
+// number's.
+pub const MAX_DECIMALS: Int = 17
+
+// ── what a float is made of ──────────────────────────────────────────
+
+// True when `x` is negative, `-0.0` included.
+//
+// `x < 0.0` is false for `-0.0`, which is why this is a function and
+// not that comparison: a formatter that dropped the sign of negative
+// zero would not round-trip it, and the sign of zero is the one thing
+// a division by it depends on.
+//
+// ```novo
+// use real
+//
+// println(str.from_bool(real.is_negative(-0.0)))    // true
+// println(str.from_bool(real.is_negative(0.0)))     // false
+// println(str.from_bool(real.is_negative(-2.5)))    // true
+// ```
+pub @tier(app)
+fn is_negative(x: Float) -> Bool
+    if x < 0.0
+        true
+    else if x > 0.0
+        false
+    else if math.is_nan(x)
+        false
+    else
+        // Zero.  `1/0.0` is `+inf` and `1/-0.0` is `-inf`, which is
+        // the only arithmetic that tells the two zeros apart.
+        1.0 / x < 0.0
+
+// The exact integer significand of `|x|`: the `m` in `|x| = m * 2^e`,
+// with `2^52 <= m < 2^53` for every finite non-zero `x`.
+//
+// Zero, the infinities and the nans answer `0` — they have no
+// significand this function could name, and `binary_exponent` answers
+// `0` for them too.
+//
+// This is EXACT.  Multiplying and dividing by powers of two changes a
+// double's exponent and leaves its significand alone, so the scaling
+// loops below introduce no error at all — including on the subnormals,
+// where doubling is exact all the way down to `2^-1074`.
+//
+// ```novo
+// use real
+//
+// // 0.1 is not a tenth: it is this many 2^-56ths.
+// println(str.from_int(real.significand(0.1)))       // 7205759403792794
+// println(str.from_int(real.binary_exponent(0.1)))   // -56
+// println(str.from_int(real.significand(1.0)))       // 4503599627370496
+// ```
+pub @tier(app)
+fn significand(x: Float) -> Int
+    if not is_finite(x) or x == 0.0
+        return 0
+    float.to_int(normalize_mantissa(magnitude_of(x)))
+
+// The `e` in `|x| = significand(x) * 2^e`, and `0` when `x` is zero,
+// an infinity or a nan.
+//
+// ```novo
+// use real
+//
+// println(str.from_int(real.binary_exponent(1.0)))         // -52
+// println(str.from_int(real.binary_exponent(5.0e-324)))    // -1074
+// ```
+pub @tier(app)
+fn binary_exponent(x: Float) -> Int
+    if not is_finite(x) or x == 0.0
+        return 0
+    normalize_exponent(magnitude_of(x))
+
+// True when `x` is neither an infinity nor a nan.
+//
+// ```novo
+// use std.math
+// use real
+//
+// println(str.from_bool(real.is_finite(1.5)))               // true
+// println(str.from_bool(real.is_finite(math.infinity())))   // false
+// ```
+pub @tier(app)
+fn is_finite(x: Float) -> Bool
+    not math.is_nan(x) and not math.is_inf(x)
+
+@tier(app)
+fn magnitude_of(x: Float) -> Float
+    if is_negative(x)
+        0.0 - x
+    else
+        x
+
+// The significand of a positive finite `f`, as a whole-number float in
+// `[2^52, 2^53)`.
+//
+// The two coarse loops move 32 binary exponents at a time so the walk
+// from `2^-1074` to `2^1024` is about seventy steps rather than two
+// thousand; the two fine loops finish the job.  Every step is a
+// multiply or divide by a power of two, so every step is exact.
+@tier(app)
+fn normalize_mantissa(f0: Float) -> Float
+    var f = f0
+    for _i in 0 .. 40
+        if f < TWO_53
+            break
+        f = f / TWO_32
+    for _i in 0 .. 40
+        if f < TWO_53
+            break
+        f = f / 2.0
+    for _i in 0 .. 40
+        if f >= TWO_21
+            break
+        f = f * TWO_32
+    for _i in 0 .. 40
+        if f >= TWO_52
+            break
+        f = f * 2.0
+    f
+
+// The exponent the same walk accumulates.  Written as its own function
+// rather than returning a pair, because a `@value` pair would be the
+// third shape in this file for the same two numbers and the walk is
+// four lines.
+@tier(app)
+fn normalize_exponent(f0: Float) -> Int
+    var f = f0
+    var e = 0
+    for _i in 0 .. 40
+        if f < TWO_53
+            break
+        f = f / TWO_32
+        e = e + 32
+    for _i in 0 .. 40
+        if f < TWO_53
+            break
+        f = f / 2.0
+        e = e + 1
+    for _i in 0 .. 40
+        if f >= TWO_21
+            break
+        f = f * TWO_32
+        e = e - 32
+    for _i in 0 .. 40
+        if f >= TWO_52
+            break
+        f = f * 2.0
+        e = e - 1
+    e
+
+// ── powers of ten ────────────────────────────────────────────────────
+
+// `10^k` as a double, exactly, for `0 <= k <= 22`.
+//
+// Every one of those is exactly representable — `10^22` is `2^22`
+// times `5^22`, and `5^22` is under `2^53` — and a product of exactly
+// representable values that is itself exactly representable is
+// computed exactly, so the loop accumulates no error.  Twenty-two is
+// where that stops being true, which is why it is where Clinger's fast
+// path stops too.
+@tier(app)
+fn pow10_exact(k: Int) -> Float
+    var p = 1.0
+    for _i in 0 .. k
+        p = p * 10.0
+    p
+
+// `10^k` as a double for any `k`, correctly rounded where `pow` is.
+//
+// Outside `0 .. 22` this is `math.pow`, and `math.pow` is where the one
+// unit in the last place the module's documentation admits to comes
+// from.
+@tier(app)
+fn pow10(k: Int) -> Float
+    if k >= 0 and k <= 22
+        pow10_exact(k)
+    else
+        math.pow(10.0, int.to_float(k))
+
+// `10^k` as an `Int`, for `0 <= k <= 18`.
+@tier(app)
+fn ipow10(k: Int) -> Int
+    var p = 1
+    for _i in 0 .. k
+        p = p * 10
+    p
+
+// ── a hundred bits, out of two doubles ───────────────────────────────
+//
+// WHY THIS IS HERE
+//
+// A double carries 53 bits.  Seventeen decimal digits need 57, so the
+// question "which seventeen-digit decimal is `x` nearest to?" cannot be
+// answered by scaling `x` in double arithmetic — the answer's last
+// digit falls off the end of the register.  That is not a rounding
+// nicety: it is the difference between writing `1.9999999999999998`
+// and writing `2`, which is a different number.
+//
+// The classical fix is older than IEEE-754 and needs nothing the
+// language does not have.  Dekker (1971) showed that the error of a
+// floating-point sum and of a floating-point product are each
+// themselves representable as a double, and can be computed with a
+// handful of ordinary operations.  Carrying the result as a PAIR —
+// a leading double and its exact error term — gives about 106 bits of
+// significand, which is twice what is needed here and leaves no
+// question about the seventeenth digit.
+//
+// So `scaled` and `assemble`, the two places this module turns a
+// binary value into decimal digits and back, both run in this
+// arithmetic.  Nothing here allocates: a `DD` is two scalars in a
+// `@value` struct and lives in registers.
+//
+// This is NOT a substitute for ryu.  Ryu is exact and this is
+// 106-bit — it decides every case a double can present except an exact
+// tie between two decimals a hundred bits apart, which does not arise
+// from a double — and it is slower per call.  See the module header.
+
+// A double and its error term: the value is `hi + lo`, with `lo`
+// smaller than half an ulp of `hi`.
+@value
+struct DD
+    hi: Float
+    lo: Float
+
+// `2^27 + 1`, Veltkamp's splitting constant: multiplying by it and
+// subtracting leaves the top 26 bits of a double, which is what makes
+// the exact product below exact.
+const SPLITTER: Float = 134217729.0
+
+// The magnitude above which the splitting multiply would overflow.
+// Values above it are scaled down by `2^-28`, split, and scaled back;
+// the scaling is by a power of two, so it costs no accuracy.
+const SPLIT_CEILING: Float = 6.69692879491417e+299
+const SPLIT_DOWN: Float = 3.725290298461914e-09
+const SPLIT_UP: Float = 268435456.0
+
+// The top 26 bits of `a`, as a double.
+@tier(app)
+fn split_high(a: Float) -> Float
+    if a > SPLIT_CEILING or a < 0.0 - SPLIT_CEILING
+        let s = a * SPLIT_DOWN
+        let t = SPLITTER * s
+        (t - (t - s)) * SPLIT_UP
+    else
+        let t = SPLITTER * a
+        t - (t - a)
+
+// `a + b`, exactly: the sum and the part of it the sum could not hold.
+@tier(app)
+fn two_sum(a: Float, b: Float) -> DD
+    let s = a + b
+    let bb = s - a
+    DD { hi: s, lo: a - (s - bb) + (b - bb) }
+
+// The same, when `|a| >= |b|` is already known — three operations
+// instead of six.
+@tier(app)
+fn quick_two_sum(a: Float, b: Float) -> DD
+    let s = a + b
+    DD { hi: s, lo: b - (s - a) }
+
+// `a * b`, exactly.  Each operand splits into two 26-bit halves whose
+// pairwise products are all exact, and what the product could not hold
+// is what those four exact pieces say is missing from it.
+@tier(app)
+fn two_prod(a: Float, b: Float) -> DD
+    let p = a * b
+    let ah = split_high(a)
+    let al = a - ah
+    let bh = split_high(b)
+    let bl = b - bh
+    let err = ah * bh - p + ah * bl + al * bh + al * bl
+    DD { hi: p, lo: err }
+
+@tier(app)
+fn dd_of(a: Float) -> DD
+    DD { hi: a, lo: 0.0 }
+
+// The nearest double to a `DD`.  One add, which is the correctly
+// rounded result except when `hi` and `lo` straddle a tie — a case a
+// double cannot produce here, since `lo` is a hundred bits below the
+// decision.
+@tier(app)
+fn dd_to_float(x: DD) -> Float
+    x.hi + x.lo
+
+@tier(app)
+fn dd_add(x: DD, y: DD) -> DD
+    let s = two_sum(x.hi, y.hi)
+    let t = two_sum(x.lo, y.lo)
+    let v = quick_two_sum(s.hi, s.lo + t.hi)
+    quick_two_sum(v.hi, v.lo + t.lo)
+
+@tier(app)
+fn dd_neg(x: DD) -> DD
+    DD { hi: 0.0 - x.hi, lo: 0.0 - x.lo }
+
+@tier(app)
+fn dd_mul(x: DD, y: DD) -> DD
+    let p = two_prod(x.hi, y.hi)
+    quick_two_sum(p.hi, p.lo + (x.hi * y.lo + x.lo * y.hi))
+
+// `x / y`, to the pair's own precision.  Two Newton corrections: the
+// first quotient digit, the remainder it left, and the digit that
+// remainder names.
+@tier(app)
+fn dd_div(x: DD, y: DD) -> DD
+    let q1 = x.hi / y.hi
+    let r1 = dd_add(x, dd_neg(dd_mul(y, dd_of(q1))))
+    let q2 = r1.hi / y.hi
+    let r2 = dd_add(r1, dd_neg(dd_mul(y, dd_of(q2))))
+    let q3 = r2.hi / y.hi
+    let s = quick_two_sum(q1, q2)
+    dd_add(s, dd_of(q3))
+
+// `10^k` as a `DD`, for `0 <= k <= 350`.
+//
+// Binary exponentiation, so the chain is nine squarings rather than
+// three hundred multiplies, and the pair's error stays around `2^-100`
+// — eighty bits below anything this module asks it to decide.
+@tier(app)
+fn pow10_dd_positive(k: Int) -> DD
+    var acc = dd_of(1.0)
+    var basis = dd_of(10.0)
+    var n = k
+    for _i in 0 .. 12
+        if n == 0
+            break
+        if n % 2 == 1
+            acc = dd_mul(acc, basis)
+        basis = dd_mul(basis, basis)
+        n = n / 2
+    acc
+
+// ── the scalings the digit search runs on ────────────────────────────
+
+// `2^100` and its reciprocal.  Both exact, and multiplying by either
+// costs no accuracy at all — which is what makes them the right tool
+// for keeping an intermediate away from the ends of the range.
+const SCALE_UP: Float = 1.2676506002282294e+30
+const SCALE_DOWN: Float = 7.888609052210118e-31
+
+// `x * 10^shift` in `DD` arithmetic, for any `shift` a double's
+// decimal exponent can reach.
+//
+// TWO THINGS GO WRONG AT THE ENDS OF THE RANGE, and both are handled
+// by moving the whole computation `2^100` away from the end and moving
+// the answer back.
+//
+// The exponent is applied in two halves when it is large, so no
+// intermediate reaches an infinity on the way to a result that is
+// finite.  And the exact product itself needs headroom: Dekker's
+// method forms the product of the two operands' leading halves, which
+// is the same size as the answer, so an answer within a factor of two
+// of the largest double overflows INSIDE the error term and comes back
+// as a nan.  `1.7976931348623157e308` is the value that finds it.
+@tier(app)
+fn scaled_dd_wide(x0: DD, shift: Int) -> DD
+    let lead = math.abs(x0.hi)
+    let mag = math.log10(lead) + int.to_float(shift)
+    // The OPERAND matters as much as the answer: dividing
+    // `1.7976931348623157e308` down to seventeen digits has a small
+    // answer and still forms a product the size of the input on the
+    // way, which is where the error term overflows.
+    if mag > 280.0 or lead > 1.0e+290
+        let v = mul_chain(dd_scale(x0, SCALE_DOWN), shift)
+        dd_scale(v, SCALE_UP)
+    else if mag < -280.0 or lead > 0.0 and lead < 1.0e-290
+        let v = mul_chain(dd_scale(x0, SCALE_UP), shift)
+        // Scaling both halves back would round each of them
+        // separately, and when the answer is SUBNORMAL the error term
+        // underflows to nothing on the way — the tail that decides the
+        // last digit is simply gone.  Combining first and scaling once
+        // keeps it: `1.7e-308` is the value that shows the difference.
+        if math.abs(v.hi) * SCALE_DOWN < 2.3e-308
+            dd_of(dd_to_float(v) * SCALE_DOWN)
+        else
+            dd_scale(v, SCALE_DOWN)
+    else
+        mul_chain(x0, shift)
+
+// A pair times an exact power of two: both halves, and no rounding.
+@tier(app)
+fn dd_scale(x: DD, f: Float) -> DD
+    DD { hi: x.hi * f, lo: x.lo * f }
+
+@tier(app)
+fn mul_chain(x: DD, shift: Int) -> DD
+    if shift >= 0
+        if shift <= 160
+            dd_mul(x, pow10_dd_positive(shift))
+        else
+            dd_mul(dd_mul(x, pow10_dd_positive(160)),
+                   pow10_dd_positive(shift - 160))
+    else
+        let down = 0 - shift
+        if down <= 160
+            dd_div(x, pow10_dd_positive(down))
+        else
+            dd_div(dd_div(x, pow10_dd_positive(160)),
+                   pow10_dd_positive(down - 160))
+
+// `a * 10^shift`, for a plain double.
+@tier(app)
+fn scaled_dd(a: Float, shift: Int) -> DD
+    scaled_dd_wide(dd_of(a), shift)
+
+// The whole part of a positive `DD`, and the fraction left over.
+//
+// These two are the whole of how a candidate decimal is chosen, and
+// they are a PAIR rather than one rounding call because the search
+// wants the candidates in order of distance from the true value — the
+// nearest first, then the next nearest.  A function that rounded and
+// handed back one integer would have thrown that ordering away, and
+// the ordering is what decides between two decimals that both read
+// back as the value: `2^-1074` is `4.94e-324`, so `4e-324` and
+// `5e-324` both round-trip and only the nearer one is the answer every
+// other library gives.
+//
+// Adding the two halves together before rounding is the thing to
+// avoid.  At `6400000000000001.42` the gap between neighbouring
+// doubles is already one, so the sum cannot hold the fraction at all
+// and `+ 0.5` lands on a tie: the seventeenth digit would be decided
+// by the register rather than by the number.  Taking the whole part
+// from `hi` and the fraction from both halves keeps the decision on
+// the value.
+//
+// A pair that overflowed to an infinity or collapsed to a nan on the
+// way here answers `Int.max`, which the search reads as "no candidate
+// at this precision" — `to_int` of a nan is not a number and the
+// arithmetic after it would trap.
+@tier(app)
+fn dd_floor_to_int(v: DD) -> Int
+    if math.is_nan(v.hi) or math.is_inf(v.hi) or v.hi >= 9.2e+18
+        return 9223372036854775807
+    if v.hi <= 0.0
+        return 0
+    // The error term is NOT bounded by one.  Above `2^53` the gap
+    // between doubles is eight or more, so `lo` carries several whole
+    // units, and correcting by a single step would leave the count
+    // that many out — which is a wrong seventeenth digit, and was.
+    let floor_hi = math.floor(v.hi)
+    let f = v.hi - floor_hi + dd_fraction_tail(v)
+    float.to_int(floor_hi) + float.to_int(math.floor(f))
+
+// The fraction the same split leaves, in `[0, 1)`.
+@tier(app)
+fn dd_fraction(v: DD) -> Float
+    if math.is_nan(v.hi) or math.is_inf(v.hi) or v.hi >= 9.2e+18 or v.hi <= 0.0
+        return 0.0
+    let f = v.hi - math.floor(v.hi) + dd_fraction_tail(v)
+    f - math.floor(f)
+
+@tier(app)
+fn dd_fraction_tail(v: DD) -> Float
+    if math.is_nan(v.lo) or math.is_inf(v.lo)
+        0.0
+    else
+        v.lo
+
+// The `k`-th nearest integer to `floor_part + frac`, for `k` in
+// `0 .. 3`.
+//
+// An exact half is a tie between two decimals equally far from the
+// value, and it is not a rare curiosity: every negative power of two
+// is one.  `2^-25` is `2.98023223876953125e-8` exactly, so at
+// seventeen digits `...312` and `...313` are both a half away, and the
+// rule that decides is round-half-to-EVEN — the same rule IEEE-754
+// uses and the same one CPython's `repr` follows.  Rounding away from
+// zero there would disagree with every other library on a whole class
+// of values.
+//
+// A list would have said this in one line and would have allocated;
+// the cases in a function are the same table, on the stack.
+@tier(app)
+fn nth_nearest(floor_part: Int, frac: Float, k: Int) -> Int
+    let up = if frac > 0.5
+        true
+    else if frac < 0.5
+        false
+    else
+        // The tie: whichever of the two is even.
+        floor_part % 2 != 0
+    if up
+        if k == 0
+            floor_part + 1
+        else if k == 1
+            floor_part
+        else
+            floor_part + 2
+    else
+        if k == 0
+            floor_part
+        else if k == 1
+            floor_part + 1
+        else
+            floor_part - 1
+
+// ── reading a float ──────────────────────────────────────────────────
+
+const F_OK: Int = 0
+const F_EMPTY: Int = 1
+const F_BAD_DIGIT: Int = 2
+const F_TRAILING: Int = 3
+
+// The outcome of a float parse: a value, or a reason and where it was
+// found.
+//
+// A `@value` struct, so neither the success nor the failure path
+// allocates.  The reason is a `digits.NumError`, because "empty", "bad
+// digit" and "trailing bytes" mean the same things here as they do
+// there.  `Overflow` is not among them: a decimal too large for a
+// double is `inf`, which is a value and not an error, and one too
+// small is zero.
+pub @value
+struct FloatParse
+    // `0` when the parse succeeded; an internal code otherwise.  Read
+    // it through `is_ok` and `error`.
+    code: Int
+    // The parsed value, when `code` is `0`.
+    num: Float
+    // The byte offset the failure was found at, or the number of bytes
+    // consumed on success.
+    at: Int
+
+impl FloatParse
+    // True when the input was a decimal number.
+    fn is_ok(self) -> Bool
+        self.code == F_OK
+
+    // The value, or `fallback` when the parse failed.
+    fn value_or(self, fallback: Float) -> Float
+        if self.code == F_OK
+            self.num
+        else
+            fallback
+
+    // Why the parse failed, or `null` when it did not.
+    fn error(self) -> ?NumError
+        if self.code == F_EMPTY
+            Some(Empty)
+        else if self.code == F_BAD_DIGIT
+            Some(BadDigit)
+        else if self.code == F_TRAILING
+            Some(Trailing)
+        else
+            None
+
+// Parse the whole of `s` as a decimal float.
+//
+// The grammar is the everyday one: an optional sign, digits, an
+// optional `.` with more digits, and an optional `e` or `E` with a
+// signed exponent.  At least one digit must stand somewhere in the
+// significand.  `inf`, `nan` and hexadecimal floats are NOT accepted —
+// they are spellings a protocol either forbids or defines for itself,
+// and silently accepting them is how `nan` gets into a temperature
+// reading.
+//
+// Nothing is allocated and nothing is copied.
+//
+// HOW EXACT IT IS.  When the digits gathered fit in `2^53` and the
+// decimal exponent leaves the scaling inside the range where powers of
+// ten are exact (Clinger's fast path — `|q| <= 22`, extended upward
+// while pre-scaling the significand keeps it under `2^53`), the result
+// is the nearest double to the input, exactly.  Outside that, the
+// scaling goes through `math.pow` and the result can be one unit in
+// the last place away from nearest.
+//
+// ```novo
+// use real
+//
+// println(str.from_float(real.parse_float("0.1").num))           // 0.1
+// println(str.from_float(real.parse_float("-1.5e3").num))        // -1500
+// println(str.from_bool(real.parse_float("1.2.3").is_ok()))      // false
+// ```
+pub @tier(app)
+fn parse_float(s: Str) -> FloatParse
+    parse_bytes_at(s, 0, str.len(s), true)
+
+// Parse `n` bytes of `b` from `off` as a decimal float.
+//
+// The `Bytes` half of the pair, for a number that arrived inside a
+// frame rather than as text.  No slice is taken and no string is
+// built.
+//
+// ```novo
+// use std.bytes
+// use real
+//
+// let frame = bytes.from_str("t=36.6;")
+// println(str.from_float(real.parse_float_bytes(frame, 2, 4).num))    // 36.6
+// ```
+pub @tier(app)
+fn parse_float_bytes(b: Bytes, off: Int, n: Int) -> FloatParse
+    parse_bytes_at(bytes.to_str(bytes.slice(b, off, off + n)), 0, n, true)
+
+// The scanner both entry points share.
+//
+// It walks the input once, gathering the significand into an `Int` and
+// counting what it had to drop, and hands the digits and the decimal
+// exponent to `assemble`.  `whole` says whether bytes left over are an
+// error (they are, for both public entry points; the shortest-form
+// verifier below calls with the same value and reads `at`).
+@tier(app)
+fn parse_bytes_at(s: Str, off: Int, n: Int, whole: Bool) -> FloatParse
+    var i = off
+    let end = off + n
+    var neg = false
+    if i < end
+        let c = byte_of(s, i)
+        if c == MINUS
+            neg = true
+            i = i + 1
+        else if c == PLUS
+            i = i + 1
+    var mant = 0
+    var ndigits = 0
+    var dropped = 0
+    var exp10 = 0
+    var seen_dot = false
+    var inexact = false
+    // The significand.  Digits stop being accumulated once another one
+    // would leave 64 bits; from there they only move the exponent, and
+    // a non-zero one that is dropped is recorded so the fast path
+    // knows it no longer has the whole number.
+    for k in i .. end
+        let c = byte_of(s, k)
+        if c == DOT and not seen_dot
+            seen_dot = true
+            i = k + 1
+        else if c >= D_ZERO and c <= D_NINE
+            if mant < 922337203685477580
+                mant = mant * 10 + (c - D_ZERO)
+                ndigits = ndigits + 1
+                if seen_dot
+                    exp10 = exp10 - 1
+            else
+                dropped = dropped + 1
+                if c != D_ZERO
+                    inexact = true
+                if not seen_dot
+                    exp10 = exp10 + 1
+            i = k + 1
+        else
+            break
+    if ndigits == 0
+        return FloatParse { code: F_EMPTY, num: 0.0, at: i }
+    // The exponent.  A bare `e` with no digits after it is not an
+    // exponent at all: the `e` and everything after it is trailing
+    // input, which is what a caller reading `1e` out of a unit-suffixed
+    // field wants to hear.
+    var after = i
+    if i < end
+        let c = byte_of(s, i)
+        if c == LOWER_E or c == LOWER_E - 32
+            let ex = digits.parse_int_bytes(bytes.from_str(s), i + 1,
+                                            end - i - 1, Dec, true)
+            if ex.is_ok()
+                exp10 = exp10 + clamp_exp(ex.num)
+                after = end
+    if whole and after < end
+        return FloatParse { code: F_TRAILING, num: 0.0, at: after }
+    let mag = assemble(mant, exp10, inexact or dropped > 0)
+    // Multiplied by minus one rather than subtracted from zero.
+    // `0.0 - 0.0` is `+0.0` in IEEE-754 — a difference of equals is
+    // positive under every rounding mode — so subtracting would lose
+    // the sign of `-0`, which is the one thing a later division by it
+    // depends on.
+    let v = if neg
+        mag * NEG_ONE
+    else
+        mag
+    FloatParse { code: F_OK, num: v, at: after }
+
+// A written exponent past ±100000 says nothing a double can carry, and
+// letting it into the arithmetic below only risks an overflow trap.
+@tier(app)
+fn clamp_exp(e: Int) -> Int
+    if e > 100000
+        100000
+    else if e < -100000
+        -100000
+    else
+        e
+
+// `mant * 10^exp10`, correctly rounded.
+//
+// Clinger's exact cases first: when the significand fits in `2^53` and
+// the power of ten is one of the twenty-three that are exactly
+// representable, the answer is a single IEEE-754 operation on two
+// exact operands, and a single operation is correctly rounded by
+// definition.  Those cases are the common ones and they are cheap.
+//
+// Everything else runs in `DD` arithmetic.  `mant` is under `10^18`,
+// so it fits in a pair exactly; the power of ten is built to about a
+// hundred bits; the product is rounded to a double once, at the end.
+// That is not a proof of correct rounding the way the exact cases
+// are — it is a hundred bits deciding a fifty-three bit question, and
+// the gap is where an exact algorithm would live.
+@tier(app)
+fn assemble(mant: Int, exp10: Int, inexact: Bool) -> Float
+    if mant == 0
+        return 0.0
+    let m = int.to_float(mant)
+    if not inexact and mant < 9007199254740992
+        if exp10 >= 0 and exp10 <= 22
+            return m * pow10_exact(exp10)
+        if exp10 < 0 and exp10 >= -22
+            return m / pow10_exact(0 - exp10)
+        // The upward extension: scale the significand by the exact
+        // power of ten that keeps it under 2^53, then one exact
+        // multiply by 10^22 finishes it.  `1e23` is the everyday value
+        // this case exists for.
+        if exp10 > 22 and exp10 <= 37
+            let lift = exp10 - 22
+            let up = m * pow10_exact(lift)
+            if up < 9007199254740992.0
+                return up * pow10_exact(22)
+    // Decide the two ends before computing them.  `1e400` is an
+    // infinity and `1e-400` is a zero, and running either through the
+    // pair arithmetic produces a nan instead: the intermediate
+    // overflows, and the error term of an infinite product is
+    // `inf - inf`.
+    let mag = math.log10(m) + int.to_float(exp10)
+    if mag > 320.0
+        return math.infinity()
+    if mag < -340.0
+        return 0.0
+    dd_to_float(scaled_dd_wide(int_to_dd(mant), exp10))
+
+// An `Int` below `10^18` as an exact `DD`: the double nearest it, and
+// the remainder that double could not hold.
+//
+// The bound matters.  `int.to_float` of a value near `Int.max` rounds
+// UP past it, and taking that back through `to_int` overflows — so the
+// top of the range answers with the leading term alone, which is all
+// the precision there was.
+@tier(app)
+fn int_to_dd(n: Int) -> DD
+    let hi = int.to_float(n)
+    if hi >= 9.2e+18 or hi <= 0.0 - 9.2e+18
+        return DD { hi: hi, lo: 0.0 }
+    DD { hi: hi, lo: int.to_float(n - float.to_int(hi)) }
+
+@tier(app)
+fn byte_of(s: Str, i: Int) -> Int
+    str.byte_at(s, i) ?? -1
+
+// ── writing a float, shortest ────────────────────────────────────────
+
+// Exactly how many bytes `shortest_into` will write for `x`.
+//
+// Allocates nothing, and does the whole of the work `shortest_into`
+// does — the digits are found by the same search — so a caller that
+// wants both should expect to pay twice.  That is the price of a
+// writer that returns the buffer rather than a length, and it is the
+// shape `url-nv`'s `pct.encoded_len` / `pct.encode_into` settled on.
+//
+// ```novo
+// use real
+//
+// println(str.from_int(real.shortest_len(0.1)))     // 3  — `0.1`
+// println(str.from_int(real.shortest_len(-1.0)))    // 2  — `-1`
+// ```
+pub @tier(app)
+fn shortest_len(x: Float) -> Int
+    if math.is_nan(x)
+        return 3
+    if math.is_inf(x)
+        if is_negative(x)
+            return 4
+        else
+            return 3
+    let neg = if is_negative(x)
+        1
+    else
+        0
+    if x == 0.0
+        return neg + 1
+    let d = shortest_digits(x)
+    neg + rendered_len(d)
+
+// Write the shortest decimal that reads back as `x` into `dst` at
+// `off`, and hand `dst` back.
+//
+// Rebind the buffer — `buf = real.shortest_into(buf, 0, x)` — and ask
+// `shortest_len(x)` for the count first.  `MAX_SHORTEST` is the
+// buffer size that is always enough.
+//
+// The form follows what a reader expects rather than a rule about
+// exponents: a value that fits without one is written plainly
+// (`0.1`, `-1`, `1234.5`), and one that does not takes the `e` form
+// (`1e23`, `5e-324`).  A nan is `nan` and the infinities are `inf` and
+// `-inf`; those three are the only output this module writes that
+// `parse_float` will not read back, and deliberately so.
+//
+// ```novo
+// use std.bytes
+// use real
+//
+// var buf = bytes.zeros(real.shortest_len(0.1))
+// buf = real.shortest_into(buf, 0, 0.1)
+// println(bytes.to_str(buf))                 // 0.1
+// ```
+pub @tier(app)
+fn shortest_into(dst: Bytes, off: Int, x: Float) -> Bytes
+    var buf = dst
+    if math.is_nan(x)
+        return write_word(buf, off, 0)
+    if math.is_inf(x)
+        if is_negative(x)
+            buf = bytes.set_u8(buf, off, MINUS)
+            return write_word(buf, off + 1, 1)
+        return write_word(buf, off, 1)
+    var w = off
+    if is_negative(x)
+        buf = bytes.set_u8(buf, w, MINUS)
+        w = w + 1
+    if x == 0.0
+        return bytes.set_u8(buf, w, D_ZERO)
+    render(buf, w, shortest_digits(x))
+
+// `nan` or `inf`, by index.  Two three-byte words, spelled once.
+@tier(app)
+fn write_word(dst: Bytes, off: Int, which: Int) -> Bytes
+    var buf = dst
+    if which == 0
+        buf = bytes.set_u8(buf, off, 110)   // n
+        buf = bytes.set_u8(buf, off + 1, 97)   // a
+        buf = bytes.set_u8(buf, off + 2, 110)   // n
+    else
+        buf = bytes.set_u8(buf, off, 105)   // i
+        buf = bytes.set_u8(buf, off + 1, 110)   // n
+        buf = bytes.set_u8(buf, off + 2, 102)   // f
+    buf
+
+// A decimal in the form the writers take: `sig * 10^exp`, with `sig`
+// carrying between one and seventeen significant digits and no
+// trailing zero.
+//
+// A `@value` struct: two scalars, copied on every call, no header and
+// no reference count.
+@value
+struct Decimal
+    sig: Int
+    exp: Int
+
+// The shortest `sig * 10^exp` that `parse_float` maps back to `x`.
+//
+// The search: for each precision from one digit to seventeen, take the
+// decimal rounding of `|x|` at that precision, and try it and its two
+// neighbours.  Parse each candidate back; the first that returns `x`
+// bit for bit is the answer.
+//
+// Why the neighbours.  The candidate is computed by scaling `|x|` by a
+// power of ten, which is a double operation and can land one in the
+// last digit either side of the true rounding.  The shortest decimal
+// that round-trips at a given precision, if there is one, is within
+// one of that rounding, so trying three covers it.
+//
+// Seventeen always succeeds: seventeen significant digits distinguish
+// every pair of doubles, so the loop cannot fall out the bottom.  The
+// `else` after it returns the seventeen-digit form anyway rather than
+// relying on that argument holding for a value nobody thought of.
+@tier(app)
+fn shortest_digits(x: Float) -> Decimal
+    let a = magnitude_of(x)
+    let k = decimal_exponent(a)
+    for p in 1 .. MAX_SIG_DIGITS + 1
+        // `sig` is `a` rounded to `p` significant digits: shift the
+        // decimal point so the first `p` digits are the integer part,
+        // and round.
+        let shift = p - 1 - k
+        let v = scaled_dd(a, shift)
+        let base = dd_floor_to_int(v)
+        let frac = dd_fraction(v)
+        // Outside `1 .. 10^18` the scaling left the range it can be
+        // trusted in — the floor clamps there rather than trapping —
+        // and stepping off the clamp would trap where it did not.
+        // Nothing at that precision is a candidate.
+        if base > 0 and base < 1000000000000000000
+            for k in 0 .. 3
+                let cand = nth_nearest(base, frac, k)
+                if cand > 0
+                    let d = strip_zeros(Decimal { sig: cand, exp: 0 - shift })
+                    if round_trips(d, a)
+                        return d
+    let last = scaled_dd(a, MAX_SIG_DIGITS - 1 - k)
+    Decimal { sig: nth_nearest(dd_floor_to_int(last), dd_fraction(last), 0),
+              exp: k - MAX_SIG_DIGITS + 1 }
+
+// `a * 10^shift`, in the pair arithmetic, as a plain double.
+//
+// Only the digit-count estimate reads this one; the digit search
+// itself reads `scaled_dd` and keeps both halves, because that is
+// where the seventeenth digit lives.
+@tier(app)
+fn scaled(a: Float, shift: Int) -> Float
+    dd_to_float(scaled_dd(a, shift))
+
+// `floor(log10(|x|))` for a finite non-zero `x`, corrected.
+//
+// `math.log10` is close but not exact at the powers of ten — it can
+// answer just under an integer where the true value is that integer —
+// so the estimate is checked against the actual decimal and nudged.
+// Two nudges are enough: the estimate is never more than one out.
+@tier(app)
+fn decimal_exponent(a: Float) -> Int
+    var k = float.to_int(math.floor(math.log10(a)))
+    for _i in 0 .. 3
+        if scaled(a, 0 - k) >= 10.0
+            k = k + 1
+        else if scaled(a, 0 - k) < 1.0
+            k = k - 1
+        else
+            break
+    k
+
+// Drop the trailing zeros of a decimal, so `1500 * 10^-1` becomes
+// `15 * 10^1` and the round-trip check answers the same for both.
+@tier(app)
+fn strip_zeros(d: Decimal) -> Decimal
+    var sig = d.sig
+    var exp = d.exp
+    for _i in 0 .. 20
+        if sig % 10 != 0 or sig == 0
+            break
+        sig = sig / 10
+        exp = exp + 1
+    Decimal { sig: sig, exp: exp }
+
+// True when `assemble` maps this decimal back to exactly `a`.
+//
+// This is the whole verification, and it is why the output of
+// `shortest_into` round-trips through `parse_float` by construction
+// rather than by argument.
+@tier(app)
+fn round_trips(d: Decimal, a: Float) -> Bool
+    assemble(d.sig, d.exp, false) == a
+
+// ── laying the digits out ────────────────────────────────────────────
+
+// How many bytes `render` writes for a decimal, sign excluded.
+//
+// The plain form when the point falls inside or just beside the digits
+// (`0.001` through `123456.0`), and the `e` form otherwise.  The cut
+// is where a reader stops being able to count the zeros, and it is the
+// same cut CPython's `repr` makes.
+@tier(app)
+fn rendered_len(d: Decimal) -> Int
+    let nd = digits.digit_count(d.sig, Dec)
+    // The decimal point sits `point` digits in from the left.
+    let point = nd + d.exp
+    if point > 0 and point <= PLAIN_MAX and d.exp <= 0
+        // 1234.5, or 1234 when the exponent is exactly zero.
+        if d.exp == 0
+            nd
+        else
+            nd + 1
+    else if point <= 0 and point > PLAIN_MIN
+        // 0.001234 — the leading `0.` plus the zeros after it.
+        2 + (0 - point) + nd
+    else if d.exp >= 0 and point <= PLAIN_MAX
+        // 1200 — the digits plus the zeros the exponent names.
+        nd + d.exp
+    else
+        // 1.2345e-17.  One digit, the point and the rest when there is
+        // a rest, then `e`, a `-` only when the exponent is negative
+        // (there is no `+` in this form), and the exponent's digits.
+        let head = if nd > 1
+            nd + 1
+        else
+            1
+        let e = point - 1
+        let esign = if e < 0
+            1
+        else
+            0
+        head + 1 + esign + digits.digit_count(exp_magnitude(e), Dec)
+
+@tier(app)
+fn exp_magnitude(e: Int) -> Int
+    if e < 0
+        0 - e
+    else
+        e
+
+// Write the decimal, in whichever of the three forms `rendered_len`
+// counted.
+@tier(app)
+fn render(dst: Bytes, off: Int, d: Decimal) -> Bytes
+    var buf = dst
+    let nd = digits.digit_count(d.sig, Dec)
+    let point = nd + d.exp
+    if point > 0 and point <= PLAIN_MAX and d.exp <= 0
+        var w = off
+        for i in 0 .. nd
+            if i == point and d.exp < 0
+                buf = bytes.set_u8(buf, w, DOT)
+                w = w + 1
+            buf = bytes.set_u8(buf, w, digits.digit_byte(d.sig, Dec, i))
+            w = w + 1
+        buf
+    else if point <= 0 and point > PLAIN_MIN
+        var w = off
+        buf = bytes.set_u8(buf, w, D_ZERO)
+        buf = bytes.set_u8(buf, w + 1, DOT)
+        w = w + 2
+        for _i in 0 .. 0 - point
+            buf = bytes.set_u8(buf, w, D_ZERO)
+            w = w + 1
+        for i in 0 .. nd
+            buf = bytes.set_u8(buf, w, digits.digit_byte(d.sig, Dec, i))
+            w = w + 1
+        buf
+    else if d.exp >= 0 and point <= PLAIN_MAX
+        var w = off
+        for i in 0 .. nd
+            buf = bytes.set_u8(buf, w, digits.digit_byte(d.sig, Dec, i))
+            w = w + 1
+        for _i in 0 .. d.exp
+            buf = bytes.set_u8(buf, w, D_ZERO)
+            w = w + 1
+        buf
+    else
+        render_exponential(buf, off, d, nd, point)
+
+@tier(app)
+fn render_exponential(dst: Bytes, off: Int, d: Decimal, nd: Int, point: Int) -> Bytes
+    var buf = dst
+    var w = off
+    buf = bytes.set_u8(buf, w, digits.digit_byte(d.sig, Dec, 0))
+    w = w + 1
+    if nd > 1
+        buf = bytes.set_u8(buf, w, DOT)
+        w = w + 1
+        for i in 1 .. nd
+            buf = bytes.set_u8(buf, w, digits.digit_byte(d.sig, Dec, i))
+            w = w + 1
+    buf = bytes.set_u8(buf, w, LOWER_E)
+    w = w + 1
+    let e = point - 1
+    if e < 0
+        buf = bytes.set_u8(buf, w, MINUS)
+        w = w + 1
+    let mag = exp_magnitude(e)
+    let ne = digits.digit_count(mag, Dec)
+    for i in 0 .. ne
+        buf = bytes.set_u8(buf, w, digits.digit_byte(mag, Dec, i))
+        w = w + 1
+    buf
+
+// ── writing a float, fixed decimals ──────────────────────────────────
+
+// Exactly how many bytes `fixed_into` will write for `x` at
+// `decimals`.
+//
+// Allocates nothing.
+//
+// ```novo
+// use real
+//
+// println(str.from_int(real.fixed_len(3.14159, 2)))     // 4  — `3.14`
+// println(str.from_int(real.fixed_len(-0.5, 3)))        // 6  — `-0.500`
+// ```
+pub @tier(app)
+fn fixed_len(x: Float, decimals: Int) -> Int
+    if not is_finite(x)
+        return shortest_len(x)
+    let a = magnitude_of(x)
+    let dec = clamp_decimals(decimals)
+    if not fits_fixed(a, dec)
+        return shortest_len(x)
+    let neg = if is_negative(x)
+        1
+    else
+        0
+    let whole = fixed_whole(a, dec)
+    let point = if dec > 0
+        1
+    else
+        0
+    neg + digits.digit_count(whole / ipow10(dec), Dec) + point + dec
+
+// Write `x` with exactly `decimals` decimal places into `dst` at
+// `off`, and hand `dst` back.  Rebind it; `fixed_len(x, decimals)` is
+// the count and `MAX_FIXED` is the buffer size that is always enough.
+//
+// `decimals` above `MAX_DECIMALS` is clamped to it, and a negative
+// `decimals` is read as zero.
+//
+// TWO CASES ARE NOT FIXED-POINT, and the reason is the double rather
+// than the code.  A nan or an infinity has no decimal places, so the
+// word is written instead.  And a value at or above `1e18` has no
+// fractional part at all — the gap between neighbouring doubles up
+// there is already larger than one — so writing eighteen digits and a
+// run of zeros would be dressing up precision that is not in the
+// number; the shortest form is written instead.
+//
+// Rounding is to nearest, and a tie goes to the even digit — the rule
+// `printf("%.2f")` follows, and the reason `0.5` at zero decimals is
+// `0` and `1.5` is `2`.
+//
+// ```novo
+// use std.bytes
+// use real
+//
+// var buf = bytes.zeros(real.fixed_len(3.14159, 3))
+// buf = real.fixed_into(buf, 0, 3.14159, 3)
+// println(bytes.to_str(buf))                 // 3.142
+// ```
+pub @tier(app)
+fn fixed_into(dst: Bytes, off: Int, x: Float, decimals: Int) -> Bytes
+    if not is_finite(x)
+        return shortest_into(dst, off, x)
+    let a = magnitude_of(x)
+    let dec = clamp_decimals(decimals)
+    if not fits_fixed(a, dec)
+        return shortest_into(dst, off, x)
+    var buf = dst
+    var w = off
+    if is_negative(x)
+        buf = bytes.set_u8(buf, w, MINUS)
+        w = w + 1
+    let whole = fixed_whole(a, dec)
+    let scale = ipow10(dec)
+    let ipart = whole / scale
+    let fpart = whole % scale
+    let ni = digits.digit_count(ipart, Dec)
+    for i in 0 .. ni
+        buf = bytes.set_u8(buf, w, digits.digit_byte(ipart, Dec, i))
+        w = w + 1
+    if dec > 0
+        buf = bytes.set_u8(buf, w, DOT)
+        w = w + 1
+        // The fraction is written with its leading zeros, which
+        // `digit_byte` would drop: `0.05` at two decimals is `5`, and
+        // the `0` in front of it is the point of the form.
+        let nf = digits.digit_count(fpart, Dec)
+        for _i in 0 .. dec - nf
+            buf = bytes.set_u8(buf, w, D_ZERO)
+            w = w + 1
+        for i in 0 .. nf
+            buf = bytes.set_u8(buf, w, digits.digit_byte(fpart, Dec, i))
+            w = w + 1
+    buf
+
+// True when `a` with `dec` decimals is a fixed-point number this
+// module can write.
+//
+// It is the SCALED value that has to fit: `a * 10^dec` becomes an
+// `Int`, and beyond that the digits would be the conversion's own
+// noise.  Above the line there is nothing lost by writing the shortest
+// form instead — a double that large has no fractional part anyway,
+// since the gap between neighbouring doubles up there is already
+// bigger than one.
+@tier(app)
+fn fits_fixed(a: Float, dec: Int) -> Bool
+    a * pow10(dec) < FIXED_SCALED_CEILING
+
+@tier(app)
+fn clamp_decimals(decimals: Int) -> Int
+    if decimals < 0
+        0
+    else if decimals > MAX_DECIMALS
+        MAX_DECIMALS
+    else
+        decimals
+
+// `|x|` scaled by `10^dec` and rounded to nearest, ties to even.
+//
+// The tie test is on the scaled value being exactly a half, which it
+// is only when the scaling was exact.  When the scaling was not exact
+// there is no tie to break — the value is already on one side of the
+// midpoint — and plain nearest is right.
+@tier(app)
+fn fixed_whole(a: Float, dec: Int) -> Int
+    let scaled_a = a * pow10(dec)
+    let floor_f = math.floor(scaled_a)
+    let frac = scaled_a - floor_f
+    let base = float.to_int(floor_f)
+    if frac > 0.5
+        base + 1
+    else if frac < 0.5
+        base
+    else if base % 2 == 0
+        base
+    else
+        base + 1

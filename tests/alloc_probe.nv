@@ -1,0 +1,71 @@
+// alloc_probe.nv — a program that formats and parses every shape the
+// core offers, so the emitted LLVM can be read for a call to the
+// allocator.
+//
+// It is not a test and asserts nothing.  `tests/orbit/test_numfmt_nv.sh`
+// builds it at `--opt=0` — so the functions stay separate and nothing
+// has inlined into `main`, which would let the assertion pass by
+// vacuity — and then reads every `digits_*` and `real_*` function in
+// `_novo/alloc_probe.ll` for `@novo_alloc`.  One is the package's
+// central promise broken.
+//
+// `numstr` is deliberately absent.  Its whole job is to return a `Str`,
+// so it allocates by design, and a probe that called it would put the
+// claim and its exception in the same compilation unit.
+
+use std.bytes
+use digits
+use real
+
+// Every integer path: both signednesses, all five radices, both
+// paddings, the length companions, the streaming scanner and both
+// parse entry points.
+fn integers(scratch: Bytes) -> Int
+    var buf = scratch
+    var total = 0
+    let radices = [Dec, Bin, Oct, Hex, HexUpper]
+    for j in 0 .. radices.len()
+        let r = radices[j]
+        let plain = digits.fmt(r)
+        let padded = digits.fmt(r).padded(24)
+        let zeros = digits.fmt(r).zero_padded(24)
+        for v in [0, 1, -1, 4096, -4096, 9223372036854775807]
+            total = total + digits.int_len(v, plain) + digits.uint_len(v, plain)
+            total = total + digits.digit_count(v, r) + digits.digit_byte(v, r, 0)
+            buf = digits.int_into(buf, 0, v, plain)
+            buf = digits.uint_into(buf, 0, v, plain)
+            buf = digits.int_into(buf, 0, v, padded)
+            buf = digits.uint_into(buf, 0, v, zeros)
+            total = total + digits.parse_int_bytes(buf, 0, 4, r, true).at
+            total = total + digits.parse_int_bytes(buf, 0, 4, r, false).at
+        total = total + digits.base_of(r)
+        if digits.is_upper(r)
+            total = total + 1
+    var scan = digits.scan(Dec, true)
+    for c in [45, 49, 50, 51]
+        scan = scan.push(c)
+    let done = scan.finish()
+    if done.is_ok()
+        total = total + done.num
+    total + digits.parse_int("-77", Dec).value_or(0)
+        + digits.parse_uint("77", Hex).value_or(0)
+
+// Every float path: the decomposition, both writers, both length
+// companions and both parse entry points.
+fn reals(scratch: Bytes) -> Int
+    var buf = scratch
+    var total = 0
+    for x in [0.1, -0.0, 1.0e+23, 4.94065645841247e-324, 1.7976931348623157e+308,
+              1234.5, -0.000123]
+        total = total + real.significand(x) + real.binary_exponent(x)
+        total = total + real.shortest_len(x) + real.fixed_len(x, 6)
+        buf = real.shortest_into(buf, 0, x)
+        buf = real.fixed_into(buf, 0, x, 6)
+        if real.is_finite(x) and not real.is_negative(x)
+            total = total + 1
+        total = total + real.parse_float_bytes(buf, 0, 3).at
+    total + real.parse_float("2.5e-3").at
+
+fn main() [io]
+    let scratch = bytes.zeros(64)
+    println(str.from_int(integers(scratch) + reals(scratch)))

@@ -1,0 +1,805 @@
+// digits.nv — integers written into a buffer the caller already owns,
+// and read back out of one.  Nothing in this module allocates.
+//
+// WHAT THIS MODULE IS FOR
+//
+// `str.from_int` builds a `Str`, which means it asks the allocator for
+// memory.  A logger on a microcontroller, a protocol encoder writing
+// into a frame it already sized, and a panic handler that must not
+// fail cannot afford that call.  This module is the other half: you
+// say how wide the answer is (`int_len`), you provide the bytes
+// (`int_into`), and no heap is touched between the two.
+//
+// THREE LAYERS, AND THE LINE BETWEEN THEM
+//
+// Novo has no `[alloc]` effect to draw that line with — SPEC § 5.1's
+// vocabulary is exhaustive and `alloc` is not in it, because
+// `@tier(embedded)` refuses the allocating CONSTRUCTS directly and a
+// declaration nobody could enforce is worse than no declaration.  So
+// the line is a MODULE boundary, which a build either crosses or does
+// not:
+//
+//   `digits` (this file)  never allocates.
+//   `real`                never allocates.
+//   `numstr`              always allocates; it is the convenience
+//                         layer and its whole job is to return a `Str`.
+//
+// Inside this file there is a second, finer line, and it is the tier
+// annotation.  `digit_count` and `digit_byte` carry `@tier(embedded)`:
+// they are pure integer algebra, they name no `Bytes` and no `Str`,
+// and firmware can call them straight into `hal.uart.write_byte`.
+// Everything that touches a `Bytes` carries `@tier(app)`, because
+// `bytes.set_u8` is not on the embedded tier's admitted surface — the
+// buffer writers allocate nothing, but they are not firmware calls.
+//
+// WHAT IS NOT HERE
+//
+// No `0x` / `0b` / `0o` prefix is written or accepted, no digit
+// grouping, and no `_` separators: a prefix is the caller's to write
+// and to strip, and a parser that silently accepts one accepts two
+// spellings of the same number.  Floats live in `real`.
+
+use std.bits
+use std.bytes
+use std.int
+use std.str
+
+// ── the bytes and the bounds this module names ───────────────────────
+
+const D_ZERO: Int = 48
+const D_NINE: Int = 57
+const UPPER_A: Int = 65
+const UPPER_Z: Int = 90
+const LOWER_A: Int = 97
+const LOWER_Z: Int = 122
+const SPACE: Int = 32
+const PLUS: Int = 43
+const MINUS: Int = 45
+
+// ── the six 64-bit boundaries ────────────────────────────────────────
+
+// The sign bit on its own.  Flipping it turns a signed compare into an
+// unsigned one, which is the whole of `ult` below.
+const SIGN_BIT: Int = -9223372036854775808
+
+// The largest signed `Int`.
+const I64_MAX: Int = 9223372036854775807
+
+// The magnitude of the smallest `Int`.  `Int.min` has no positive
+// counterpart, so its magnitude is only expressible as the unsigned
+// value `0x8000000000000000` — the same bit pattern as `SIGN_BIT`,
+// under the name that says what it is being used for here.
+const I64_MIN_MAGNITUDE: Int = -9223372036854775808
+
+// The largest unsigned value that can still be multiplied by the base
+// without leaving 64 bits: `(2^64 - 1) / base`, read as unsigned.
+const U64_MAX_DIV_2: Int = 9223372036854775807
+const U64_MAX_DIV_8: Int = 2305843009213693951
+const U64_MAX_DIV_10: Int = 1844674407370955161
+const U64_MAX_DIV_16: Int = 1152921504606846975
+
+// ── the widest answer each form can produce ──────────────────────────
+//
+// These exist so a caller can declare a buffer without guessing, and
+// without the guess being wrong for exactly one input.  Each is the
+// exact byte count of the widest value in that form — the tests assert
+// that by measuring, not by restating the number.
+
+// `18446744073709551615`, the widest unsigned decimal.
+pub const MAX_UINT_DEC: Int = 20
+
+// `1777777777777777777777`, the widest unsigned octal.
+pub const MAX_UINT_OCT: Int = 22
+
+// `ffffffffffffffff`, the widest unsigned hexadecimal.
+pub const MAX_UINT_HEX: Int = 16
+
+// Sixty-four ones: the widest unsigned binary.
+pub const MAX_UINT_BIN: Int = 64
+
+// `-9223372036854775808`, the widest signed decimal.
+pub const MAX_INT_DEC: Int = 20
+
+// The sign plus `1000000000000000000000` — `Int.min`'s magnitude is
+// `2^63`, which is one octal digit wider than `Int.max`'s.
+pub const MAX_INT_OCT: Int = 23
+
+// The sign plus `8000000000000000`.
+pub const MAX_INT_HEX: Int = 17
+
+// The sign plus a one and sixty-three zeros.
+pub const MAX_INT_BIN: Int = 65
+
+// The widest of every form above, and so the size of a buffer that can
+// hold any integer this module writes in any radix.  Padding is a
+// caller's own width and is not counted here.
+pub const MAX_INT_ANY: Int = 65
+
+// ── the radix ────────────────────────────────────────────────────────
+
+// Which base an integer is written in and read back from, and — for
+// the bases with letter digits — which case those letters take.
+//
+// An enum rather than an `Int`, so there is no such thing as an
+// invalid radix to check for and no error path to test.  The four
+// bases are the ones a protocol, a register dump or a human ever
+// wants; base 36 is not in this package because nothing in this
+// package's reason to exist asks for it.
+pub enum Radix
+    // Base 2.
+    Bin
+    // Base 8.
+    Oct
+    // Base 10.
+    Dec
+    // Base 16, with `a`–`f`.  Reading accepts either case.
+    Hex
+    // Base 16, with `A`–`F`.
+    HexUpper
+
+// The numeric base `r` counts in.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.base_of(Hex)))    // 16
+// println(str.from_int(digits.base_of(Dec)))    // 10
+// ```
+pub @tier(embedded)
+fn base_of(r: Radix) -> Int
+    match r
+        Bin      => 2
+        Oct      => 8
+        Dec      => 10
+        Hex      => 16
+        HexUpper => 16
+
+// True when `r` writes its letter digits in upper case.
+pub @tier(embedded)
+fn is_upper(r: Radix) -> Bool
+    match r
+        HexUpper => true
+        _        => false
+
+// ── unsigned arithmetic over a signed `Int` ──────────────────────────
+//
+// `Int` is a signed 64-bit integer and there is no unsigned type, so
+// the unsigned forms below read the same 64 bits as a value in
+// `0 .. 2^64-1`.  That is not a trick: it is what `uint_into` promises
+// its caller, and it is how `Int.min`'s magnitude — which is `2^63`,
+// one more than `Int.max` — is representable at all.
+
+// `a < b`, with both read as unsigned.
+//
+// Flipping the sign bit of both maps the unsigned order onto the
+// signed one exactly: `0` becomes the most negative value, `2^64-1`
+// becomes the largest, and everything between keeps its place.
+@tier(embedded)
+fn ult(a: Int, b: Int) -> Bool
+    bits.xor(a, SIGN_BIT) < bits.xor(b, SIGN_BIT)
+
+// `u / base` with `u` read as unsigned.
+//
+// The powers of two are a shift.  Base 10 uses the identity
+// `floor(floor(u/2)/5) == floor(u/10)`: `u >>> 1` is always a
+// non-negative `Int`, so the division after it is an ordinary signed
+// one and no unsigned divide is needed.
+@tier(embedded)
+fn udiv(u: Int, base: Int) -> Int
+    if base == 10
+        bits.shr(u, 1) / 5
+    else if base == 16
+        bits.shr(u, 4)
+    else if base == 8
+        bits.shr(u, 3)
+    else
+        bits.shr(u, 1)
+
+// `u % base` with `u` read as unsigned.
+//
+// The multiply wraps by construction — `udiv(u, base) * base` is `u`
+// minus the remainder and can sit above `Int.max` — so it is spelled
+// as the wrapping operation rather than left to trap.
+@tier(embedded)
+fn umod(u: Int, base: Int) -> Int
+    if base == 10
+        int.wrapping_sub(u, int.wrapping_mul(udiv(u, 10), 10))
+    else
+        bits.band(u, base - 1)
+
+// The largest unsigned value that survives being multiplied by `base`.
+@tier(embedded)
+fn u_max_div(base: Int) -> Int
+    if base == 10
+        U64_MAX_DIV_10
+    else if base == 16
+        U64_MAX_DIV_16
+    else if base == 8
+        U64_MAX_DIV_8
+    else
+        U64_MAX_DIV_2
+
+// ── digits, one at a time ────────────────────────────────────────────
+
+// How many digits `v` takes in `r`, with `v` read as UNSIGNED.
+//
+// Zero is one digit.  This is the count without a sign and without
+// padding — `uint_len` and `int_len` are the ones that add those.
+//
+// `@tier(embedded)`: pure integer algebra, so firmware can call it.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.digit_count(0, Dec)))      // 1
+// println(str.from_int(digits.digit_count(255, Hex)))    // 2
+// println(str.from_int(digits.digit_count(255, Bin)))    // 8
+// ```
+pub @tier(embedded)
+fn digit_count(v: Int, r: Radix) -> Int
+    let base = base_of(r)
+    var rest = v
+    var n = 0
+    // Sixty-four is the most digits any 64-bit value can take in any
+    // of these bases (base 2), so the loop carries its own bound and
+    // the tier checker can read it.
+    for _i in 0 .. 64
+        if rest == 0
+            break
+        rest = udiv(rest, base)
+        n = n + 1
+    if n == 0
+        1
+    else
+        n
+
+// The ASCII byte of digit `i` of `v` in `r`, counting from the MOST
+// significant digit, with `v` read as UNSIGNED.
+//
+// `i` outside `0 .. digit_count(v, r)` answers `-1`; nothing panics
+// and nothing is written.
+//
+// This is the call firmware uses.  A program with no heap and no
+// `Bytes` still has a UART, and
+//
+//   for i in 0 .. digits.digit_count(n, Dec)
+//       hal.uart.write_byte(digits.digit_byte(n, Dec, i))
+//
+// is the whole of "print a number" on that machine.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.digit_byte(42, Dec, 0)))    // 52 — the byte `4`
+// println(str.from_int(digits.digit_byte(42, Dec, 1)))    // 50 — the byte `2`
+// println(str.from_int(digits.digit_byte(42, Dec, 2)))    // -1 — past the end
+// ```
+pub @tier(embedded)
+fn digit_byte(v: Int, r: Radix, i: Int) -> Int
+    let n = digit_count(v, r)
+    if i < 0 or i >= n
+        return -1
+    let base = base_of(r)
+    var rest = v
+    // Digit `i` from the left is digit `n - 1 - i` from the right, so
+    // shed that many from the right and read what is left standing.
+    for k in 0 .. 64
+        if k >= n - 1 - i
+            break
+        rest = udiv(rest, base)
+    digit_to_byte(umod(rest, base), is_upper(r))
+
+// The ASCII byte for a digit value in `0 .. 15`.
+@tier(embedded)
+fn digit_to_byte(d: Int, upper: Bool) -> Int
+    if d < 10
+        D_ZERO + d
+    else if upper
+        UPPER_A + d - 10
+    else
+        LOWER_A + d - 10
+
+// The value of an ASCII digit byte in base `base`, or `-1` when the
+// byte is not a digit of that base.  Hex reads either case whatever
+// case it writes: a parser that refused `FF` because the formatter
+// writes `ff` would be refusing its own output's twin.
+@tier(embedded)
+fn byte_to_digit(c: Int, base: Int) -> Int
+    var d = -1
+    if c >= D_ZERO and c <= D_NINE
+        d = c - D_ZERO
+    else if c >= UPPER_A and c <= UPPER_Z
+        d = c - UPPER_A + 10
+    else if c >= LOWER_A and c <= LOWER_Z
+        d = c - LOWER_A + 10
+    if d < 0 or d >= base
+        -1
+    else
+        d
+
+// ── how a number is laid out ─────────────────────────────────────────
+
+// The radix, the letter case, and the field width an integer is
+// written with.
+//
+// A `@value` struct: it is four scalars, it is copied on every binding
+// and every call, it sits on the stack with no header and no reference
+// count (SPEC § 14.4), and passing one costs less than passing a
+// pointer to it would.
+//
+// Build one with `fmt` and narrow it with the methods; the fields are
+// public so a caller that wants to write the whole thing out can.
+pub @value
+struct IntFormat
+    // 2, 8, 10 or 16.
+    base: Int
+    // Upper-case letter digits, for base 16.
+    upper: Bool
+    // The minimum field width in bytes.  `0` means "as wide as the
+    // number is".  A number wider than `width` is never truncated —
+    // the width is a floor, not a field.
+    width: Int
+    // Pad with `0` after the sign rather than with spaces before it.
+    zero_pad: Bool
+
+impl IntFormat
+    // The same format, right-aligned in a field `w` bytes wide, padded
+    // with spaces.
+    fn padded(self, w: Int) -> IntFormat
+        IntFormat { base: self.base, upper: self.upper, width: w,
+                    zero_pad: false }
+
+    // The same format, `w` bytes wide, padded with `0` between the
+    // sign and the first digit — the `%08x` of a register dump.
+    fn zero_padded(self, w: Int) -> IntFormat
+        IntFormat { base: self.base, upper: self.upper, width: w,
+                    zero_pad: true }
+
+// The default format for a radix: no padding, the radix's own case.
+//
+// ```novo
+// use digits
+//
+// let hex = digits.fmt(Hex)
+// println(str.from_int(hex.base))                      // 16
+// println(str.from_int(digits.fmt(Dec).padded(6).width))   // 6
+// ```
+pub @tier(embedded)
+fn fmt(r: Radix) -> IntFormat
+    IntFormat { base: base_of(r), upper: is_upper(r), width: 0,
+                zero_pad: false }
+
+// The radix `f` writes in, back as a `Radix`.
+@tier(embedded)
+fn radix_of(f: IntFormat) -> Radix
+    if f.base == 2
+        Bin
+    else if f.base == 8
+        Oct
+    else if f.base == 10
+        Dec
+    else if f.upper
+        HexUpper
+    else
+        Hex
+
+// ── how wide the answer will be ──────────────────────────────────────
+
+// Exactly how many bytes `uint_into` will write for `v` under `f`,
+// with `v` read as UNSIGNED.
+//
+// Allocates nothing: this is the call that sizes the buffer.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.uint_len(255, digits.fmt(Hex))))                 // 2
+// println(str.from_int(digits.uint_len(255, digits.fmt(Hex).zero_padded(8))))  // 8
+// println(str.from_int(digits.uint_len(-1, digits.fmt(Dec))))                  // 20
+// ```
+pub @tier(embedded)
+fn uint_len(v: Int, f: IntFormat) -> Int
+    let n = digit_count(v, radix_of(f))
+    if f.width > n
+        f.width
+    else
+        n
+
+// Exactly how many bytes `int_into` will write for `v` under `f`,
+// sign included.
+//
+// Allocates nothing.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.int_len(-42, digits.fmt(Dec))))     // 3
+// println(str.from_int(digits.int_len(0, digits.fmt(Dec))))       // 1
+// ```
+pub @tier(embedded)
+fn int_len(v: Int, f: IntFormat) -> Int
+    let mag = magnitude(v)
+    let n = digit_count(mag, radix_of(f)) + sign_len(v)
+    if f.width > n
+        f.width
+    else
+        n
+
+// `|v|`, as an unsigned value.  `Int.min` is the reason this is not
+// `-v`: its magnitude is `2^63`, which no `Int` holds, and the
+// wrapping subtraction produces exactly the bit pattern that means
+// `2^63` when the 64 bits are read as unsigned.
+@tier(embedded)
+fn magnitude(v: Int) -> Int
+    if v < 0
+        int.wrapping_sub(0, v)
+    else
+        v
+
+@tier(embedded)
+fn sign_len(v: Int) -> Int
+    if v < 0
+        1
+    else
+        0
+
+// ── writing ──────────────────────────────────────────────────────────
+
+// Write `v` into `dst` at `off` under `f`, with `v` read as UNSIGNED,
+// and hand `dst` back.
+//
+// Rebind the buffer you passed in — `buf = digits.uint_into(buf, 0, v,
+// f)` — which is the spelling the in-place writer rule wants
+// (docs/stdlib/bytes.md) and what `pct.encode_into` in `url-nv`
+// settled on.  The COUNT of bytes written is `uint_len(v, f)`, asked
+// before the call; nothing has to be discovered after it.
+//
+// Writing past the end of `dst` panics, the way every `bytes` writer
+// does; `uint_len` is how you avoid it.
+//
+// ```novo
+// use std.bytes
+// use digits
+//
+// let f = digits.fmt(HexUpper).zero_padded(8)
+// var buf = bytes.zeros(digits.uint_len(48879, f))
+// buf = digits.uint_into(buf, 0, 48879, f)
+// println(bytes.to_str(buf))          // 0000BEEF
+// ```
+pub @tier(app)
+fn uint_into(dst: Bytes, off: Int, v: Int, f: IntFormat) -> Bytes
+    write_magnitude(dst, off, v, f, false)
+
+// Write `v` into `dst` at `off` under `f`, sign included, and hand
+// `dst` back.  Rebind it; `int_len(v, f)` is the byte count.
+//
+// ```novo
+// use std.bytes
+// use digits
+//
+// let f = digits.fmt(Dec).padded(6)
+// var buf = bytes.zeros(digits.int_len(-42, f))
+// buf = digits.int_into(buf, 0, -42, f)
+// println("[" + bytes.to_str(buf) + "]")     // [   -42]
+// ```
+pub @tier(app)
+fn int_into(dst: Bytes, off: Int, v: Int, f: IntFormat) -> Bytes
+    write_magnitude(dst, off, magnitude(v), f, v < 0)
+
+// The one body both writers share.
+//
+// The layout question is which of the two paddings is in play.  Zero
+// padding goes BETWEEN the sign and the digits (`-0042`), because
+// `0-42` is not a number; space padding goes before the sign
+// (`   -42`), because that is what right-aligning a column means.
+@tier(app)
+fn write_magnitude(dst: Bytes, off: Int, mag: Int, f: IntFormat, neg: Bool) -> Bytes
+    var buf = dst
+    let r = radix_of(f)
+    let ndigits = digit_count(mag, r)
+    let sign = if neg
+        1
+    else
+        0
+    let body = ndigits + sign
+    let total = if f.width > body
+        f.width
+    else
+        body
+    let pad = total - body
+    var w = off
+    if f.zero_pad
+        if neg
+            buf = bytes.set_u8(buf, w, MINUS)
+            w = w + 1
+        for _i in 0 .. pad
+            buf = bytes.set_u8(buf, w, D_ZERO)
+            w = w + 1
+    else
+        for _i in 0 .. pad
+            buf = bytes.set_u8(buf, w, SPACE)
+            w = w + 1
+        if neg
+            buf = bytes.set_u8(buf, w, MINUS)
+            w = w + 1
+    for i in 0 .. ndigits
+        buf = bytes.set_u8(buf, w, digit_byte(mag, r, i))
+        w = w + 1
+    buf
+
+// ── what a parse can go wrong with ───────────────────────────────────
+
+// Why a parse did not produce a number.
+//
+// Four reasons rather than one absent value, because the caller's
+// answer differs for each: `Empty` is a missing field, `BadDigit` is a
+// typo, `Overflow` is a number that is real but too large for 64 bits,
+// and `Trailing` is a number followed by something else — a unit
+// suffix the caller may well want to go on and read.  An option would
+// have collapsed all four into "no".
+pub enum NumError
+    // No digits at all: an empty input, or a sign with nothing after it.
+    Empty
+    // A byte that is not a digit of this radix, before the number ended.
+    BadDigit
+    // The digits name a value outside the range the result can hold.
+    Overflow
+    // The number ended and bytes were left over.
+    Trailing
+
+const E_OK: Int = 0
+const E_EMPTY: Int = 1
+const E_BAD_DIGIT: Int = 2
+const E_OVERFLOW: Int = 3
+const E_TRAILING: Int = 4
+
+// The outcome of a parse: a value, or a reason and where it was found.
+//
+// A `@value` struct, so it is returned in registers and neither the
+// success nor the failure path allocates.  Read `value` only after
+// `is_ok` says true, and `error` only after it says false.
+pub @value
+struct IntParse
+    // `0` when the parse succeeded; an internal code otherwise.  Read
+    // it through `is_ok` and `error`.
+    code: Int
+    // The parsed value, when `code` is `0`.
+    num: Int
+    // The byte offset the failure was found at, or the number of bytes
+    // consumed on success.
+    at: Int
+
+impl IntParse
+    // True when the input was a number this radix and this width hold.
+    fn is_ok(self) -> Bool
+        self.code == E_OK
+
+    // The value, or `fallback` when the parse failed — the one-line
+    // form for a caller with a sensible default.
+    fn value_or(self, fallback: Int) -> Int
+        if self.code == E_OK
+            self.num
+        else
+            fallback
+
+    // Why the parse failed, or `null` when it did not.
+    fn error(self) -> ?NumError
+        if self.code == E_EMPTY
+            Some(Empty)
+        else if self.code == E_BAD_DIGIT
+            Some(BadDigit)
+        else if self.code == E_OVERFLOW
+            Some(Overflow)
+        else if self.code == E_TRAILING
+            Some(Trailing)
+        else
+            None
+
+// ── parsing, one byte at a time ──────────────────────────────────────
+
+// A parse in progress: the state between two bytes.
+//
+// This is the shape a program with no buffer uses.  Bytes arrive from
+// a UART one interrupt at a time and there is nowhere to put them; the
+// scanner carries the whole of what has been read so far in four
+// scalars on the stack, and `finish` answers when the number ends.
+// `parse_int` and `parse_int_bytes` are loops over exactly this.
+pub @value
+struct IntScan
+    // 2, 8, 10 or 16.
+    base: Int
+    // Whether a leading `-` is accepted and the range is `Int`'s.
+    signed: Bool
+    // The magnitude read so far, as an unsigned value.
+    acc: Int
+    // How many bytes have been pushed.
+    seen: Int
+    // How many of them were digits.
+    ndigits: Int
+    // Whether a `-` was read.
+    neg: Bool
+    // The first error, or `0`.
+    code: Int
+    // Where that error was.
+    at: Int
+
+impl IntScan
+    // The scanner after one more byte.  Rebind it:
+    // `s = s.push(byte)`.
+    //
+    // The first error sticks: pushing more bytes after one cannot
+    // clear it, so a caller may push a whole buffer and ask once.
+    fn push(self, c: Int) -> IntScan
+        if self.code != E_OK
+            return advance(self)
+        if c == MINUS or c == PLUS
+            return push_sign(self, c)
+        let d = byte_to_digit(c, self.base)
+        if d < 0
+            return fail(self, E_BAD_DIGIT)
+        push_digit(self, d)
+
+    // True while nothing has gone wrong.
+    fn is_ok(self) -> Bool
+        self.code == E_OK
+
+    // The number the bytes pushed so far name.
+    //
+    // A scanner that has seen no digit answers `Empty`; one whose
+    // digits leave the target range answers `Overflow`.  Calling this
+    // does not end the scan — a caller may push more bytes and ask
+    // again, which is what a UART reader wanting "the number so far"
+    // does.
+    fn finish(self) -> IntParse
+        if self.code != E_OK
+            return IntParse { code: self.code, num: 0, at: self.at }
+        if self.ndigits == 0
+            return IntParse { code: E_EMPTY, num: 0, at: self.seen }
+        settle(self)
+
+// A byte that is not part of the number: the position advances so the
+// offset a later failure reports is still the right one.
+@tier(embedded)
+fn advance(s: IntScan) -> IntScan
+    IntScan { base: s.base, signed: s.signed, acc: s.acc, seen: s.seen + 1,
+              ndigits: s.ndigits, neg: s.neg, code: s.code, at: s.at }
+
+@tier(embedded)
+fn fail(s: IntScan, code: Int) -> IntScan
+    IntScan { base: s.base, signed: s.signed, acc: s.acc, seen: s.seen + 1,
+              ndigits: s.ndigits, neg: s.neg, code: code, at: s.seen }
+
+// A sign is only a sign in front, and `-` is only a sign at all when
+// the scanner is signed.  Anywhere else it is not a digit.
+@tier(embedded)
+fn push_sign(s: IntScan, c: Int) -> IntScan
+    if s.seen != 0 or s.ndigits != 0
+        return fail(s, E_BAD_DIGIT)
+    if c == MINUS and not s.signed
+        return fail(s, E_BAD_DIGIT)
+    IntScan { base: s.base, signed: s.signed, acc: s.acc, seen: s.seen + 1,
+              ndigits: s.ndigits, neg: c == MINUS, code: s.code, at: s.at }
+
+// Accumulate, and notice a 64-bit overflow at the step that causes it
+// rather than after the value has already wrapped.
+//
+// Two checks, because there are two ways to leave the width: the
+// multiply can carry out on its own, and the add of the new digit can
+// carry out of a product that fitted.  The second is caught by the sum
+// coming out BELOW the product, which for unsigned addition happens
+// exactly when it wrapped.
+@tier(embedded)
+fn push_digit(s: IntScan, d: Int) -> IntScan
+    if ult(u_max_div(s.base), s.acc)
+        return fail(s, E_OVERFLOW)
+    let scaled = int.wrapping_mul(s.acc, s.base)
+    let next = int.wrapping_add(scaled, d)
+    if ult(next, scaled)
+        return fail(s, E_OVERFLOW)
+    IntScan { base: s.base, signed: s.signed, acc: next, seen: s.seen + 1,
+              ndigits: s.ndigits + 1, neg: s.neg, code: s.code, at: s.at }
+
+// Turn the accumulated magnitude into the signed or unsigned result,
+// refusing the magnitudes the target range does not hold.
+@tier(embedded)
+fn settle(s: IntScan) -> IntParse
+    if not s.signed
+        return IntParse { code: E_OK, num: s.acc, at: s.seen }
+    if s.neg
+        if ult(I64_MIN_MAGNITUDE, s.acc)
+            IntParse { code: E_OVERFLOW, num: 0, at: s.seen }
+        else
+            IntParse { code: E_OK, num: int.wrapping_sub(0, s.acc), at: s.seen }
+    else if ult(I64_MAX, s.acc)
+        IntParse { code: E_OVERFLOW, num: 0, at: s.seen }
+    else
+        IntParse { code: E_OK, num: s.acc, at: s.seen }
+
+// A fresh scanner.
+//
+// `signed` chooses the range: true accepts a leading `-` and refuses
+// anything outside `Int.min .. Int.max`; false refuses the `-` and
+// accepts the full unsigned 64-bit range, handing back the
+// two's-complement `Int` with those bits — the same reading
+// `uint_into` writes.
+//
+// ```novo
+// use digits
+//
+// var s = digits.scan(Dec, true)
+// for c in [45, 49, 50]                  // the bytes of `-12`
+//     s = s.push(c)
+// println(str.from_int(s.finish().num))   // -12
+// ```
+pub @tier(embedded)
+fn scan(r: Radix, signed: Bool) -> IntScan
+    IntScan { base: base_of(r), signed: signed, acc: 0, seen: 0,
+              ndigits: 0, neg: false, code: E_OK, at: 0 }
+
+// ── parsing a whole input ────────────────────────────────────────────
+
+// Parse the whole of `s` as a signed integer in `r`.
+//
+// The whole of it: a number followed by anything at all is `Trailing`
+// with the offset of the first leftover byte, not a number.  Nothing
+// is allocated and nothing is copied — the bytes are read where they
+// stand.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.parse_int("-1234", Dec).num))        // -1234
+// println(str.from_int(digits.parse_int("beef", Hex).num))         // 48879
+// println(str.from_bool(digits.parse_int("12x", Dec).is_ok()))     // false
+// println(str.from_int(digits.parse_int("12x", Dec).at))           // 2
+// ```
+pub @tier(app)
+fn parse_int(s: Str, r: Radix) -> IntParse
+    parse_str(s, r, true)
+
+// Parse the whole of `s` as an unsigned 64-bit integer in `r`,
+// answering the two's-complement `Int` with those bits.
+//
+// This is the reading `uint_into` writes, and the pair round-trips:
+// `18446744073709551615` parses to `-1`, and `uint_into` writes `-1`
+// back out as `18446744073709551615`.  A leading `-` is `BadDigit`
+// here, because an unsigned number has no sign.
+//
+// ```novo
+// use digits
+//
+// println(str.from_int(digits.parse_uint("18446744073709551615", Dec).num))  // -1
+// println(str.from_bool(digits.parse_uint("-1", Dec).is_ok()))               // false
+// ```
+pub @tier(app)
+fn parse_uint(s: Str, r: Radix) -> IntParse
+    parse_str(s, r, false)
+
+@tier(app)
+fn parse_str(s: Str, r: Radix, signed: Bool) -> IntParse
+    var sc = scan(r, signed)
+    let n = str.len(s)
+    for i in 0 .. n
+        sc = sc.push(str.byte_at(s, i) ?? -1)
+    sc.finish()
+
+// Parse `n` bytes of `b` from `off` as an integer in `r`.
+//
+// The `Bytes` half of the pair, for input that arrived as a packet
+// rather than as text: no slice is taken and no string is built, so a
+// field inside a frame is parsed where it lies.  `signed` chooses the
+// range exactly as it does for `scan`.
+//
+// ```novo
+// use std.bytes
+// use digits
+//
+// let frame = bytes.from_str("id=4096;")
+// println(str.from_int(digits.parse_int_bytes(frame, 3, 4, Dec, true).num))   // 4096
+// ```
+pub @tier(app)
+fn parse_int_bytes(b: Bytes, off: Int, n: Int, r: Radix, signed: Bool) -> IntParse
+    var sc = scan(r, signed)
+    for i in 0 .. n
+        sc = sc.push(bytes.byte_at(b, off + i) ?? -1)
+    sc.finish()

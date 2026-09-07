@@ -1,0 +1,89 @@
+// numstr.nv — the same numbers, as a `Str`.  EVERY function in this
+// module allocates, and that is the whole reason it is a separate
+// module.
+//
+// WHY THE LINE IS A MODULE AND NOT A NAMING CONVENTION
+//
+// Novo has no `[alloc]` effect: SPEC § 5.1's vocabulary is exhaustive
+// and a clause naming `alloc` is E3005.  `@tier(embedded)` refuses the
+// allocating constructs directly, so the effect would have been a
+// declaration nobody could check, and the language removed it rather
+// than keep one.
+//
+// The line still has to be somewhere a build can see, so it is a
+// module boundary — the same answer `url-nv` reached, where `uri`
+// never allocates and `href` always does.  A program with no heap
+// imports `digits` and `real` and stops there; importing `numstr` is
+// the decision to have an allocator, and it is one line of the
+// program, in the imports, where a reader looks for exactly that kind
+// of decision.
+//
+// Every function here is `digits` or `real` plus one `bytes.zeros`:
+// ask the core how wide the answer is, allocate exactly that, let the
+// core fill it.  There is no second implementation of anything, which
+// is the other half of why the split is worth having.
+
+use std.bytes
+use digits
+use real
+
+// `v` as a `Str`, signed, under `f`.  THIS ALLOCATES.
+//
+// ```novo
+// use digits
+// use numstr
+//
+// println(numstr.int_to_str(-42, digits.fmt(Dec)))                       // -42
+// println(numstr.int_to_str(255, digits.fmt(HexUpper).zero_padded(4)))   // 00FF
+// ```
+pub @tier(app)
+fn int_to_str(v: Int, f: IntFormat) -> Str
+    var buf = bytes.zeros(digits.int_len(v, f))
+    buf = digits.int_into(buf, 0, v, f)
+    bytes.to_str(buf)
+
+// `v` as a `Str`, with `v` read as an unsigned 64-bit value, under
+// `f`.  THIS ALLOCATES.
+//
+// ```novo
+// use digits
+// use numstr
+//
+// println(numstr.uint_to_str(-1, digits.fmt(Dec)))    // 18446744073709551615
+// println(numstr.uint_to_str(-1, digits.fmt(Hex)))    // ffffffffffffffff
+// ```
+pub @tier(app)
+fn uint_to_str(v: Int, f: IntFormat) -> Str
+    var buf = bytes.zeros(digits.uint_len(v, f))
+    buf = digits.uint_into(buf, 0, v, f)
+    bytes.to_str(buf)
+
+// `x` as the shortest decimal that reads back as `x`.  THIS
+// ALLOCATES.
+//
+// ```novo
+// use numstr
+//
+// println(numstr.float_to_str(0.1))       // 0.1
+// println(numstr.float_to_str(1.0e23))    // 1e23
+// println(numstr.float_to_str(-0.0))      // -0
+// ```
+pub @tier(app)
+fn float_to_str(x: Float) -> Str
+    var buf = bytes.zeros(real.shortest_len(x))
+    buf = real.shortest_into(buf, 0, x)
+    bytes.to_str(buf)
+
+// `x` with exactly `decimals` decimal places.  THIS ALLOCATES.
+//
+// ```novo
+// use numstr
+//
+// println(numstr.fixed_to_str(3.14159, 2))    // 3.14
+// println(numstr.fixed_to_str(-0.5, 3))       // -0.500
+// ```
+pub @tier(app)
+fn fixed_to_str(x: Float, decimals: Int) -> Str
+    var buf = bytes.zeros(real.fixed_len(x, decimals))
+    buf = real.fixed_into(buf, 0, x, decimals)
+    bytes.to_str(buf)
