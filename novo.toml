@@ -1,10 +1,11 @@
 [package]
 name        = "numfmt-nv"
-version     = "0.1.0"
+version     = "0.1.1"
 description = "Numbers written into a buffer the caller already owns, and read back out of one: integers in base 2, 8, 10 and 16 with widths and zero padding, floats as shortest-round-trip or fixed decimals, and parses that say WHY they failed. The core allocates nothing."
 license     = "Apache-2.0"
 stability   = "experimental"
 category    = "text"
+layer       = "core"
 tags        = ["itoa", "ryu", "format", "parse", "no-alloc", "embedded", "integer", "float"]
 repository  = "https://github.com/novolang/numfmt-nv"
 maintainers = ["novo-lang"]

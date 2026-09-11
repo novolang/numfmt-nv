@@ -76,7 +76,7 @@ fn test_the_decomposition_of_the_values_that_have_none() [io]
     // there is no `m * 2^e` for any of them, and answering something
     // that looked like one would be worse than answering nothing.
     let vals = [0.0, -0.0, math.infinity(), 0.0 - math.infinity(), math.nan()]
-    for i in 0 .. vals.len()
+    for i in 0..vals.len()
         test.case(str.from_int(i))
         test.assert_eq(str.from_int(real.significand(vals[i])), "0")
         test.assert_eq(str.from_int(real.binary_exponent(vals[i])), "0")
@@ -92,7 +92,7 @@ fn test_no_shortest_form_is_wider_than_the_constant() [io]
                 -2.2250738585072014e-308, 1.2345678901234567e-308,
                 -1.2345678901234567e-308, 0.1, -0.1, 0.0, -0.0,
                 math.nan(), math.infinity(), 0.0 - math.infinity()]
-    for i in 0 .. vals.len()
+    for i in 0..vals.len()
         let text = numstr.float_to_str(vals[i])
         test.case(text)
         test.assert_eq(str.from_int(str.len(text)),
@@ -103,8 +103,8 @@ fn test_no_shortest_form_is_wider_than_the_constant() [io]
 fn test_no_fixed_form_is_wider_than_the_constant() [io]
     let vals = [1.0e+18, -1.0e+18,
                 0.1, -0.1, 0.0, -0.0, 123456.789, -1.0e+17]
-    for i in 0 .. vals.len()
-        for d in 0 .. 18
+    for i in 0..vals.len()
+        for d in 0..18
             let text = numstr.fixed_to_str(vals[i], d)
             test.case(text)
             test.assert_eq(str.from_int(str.len(text)),

@@ -45,7 +45,7 @@ fn put_int(v: Int, r: Radix) [hw]
     else
         v
     let n: Int = digits.digit_count(mag, r)
-    for i in 0 .. n
+    for i in 0..n
         hal.uart.write_byte(digits.digit_byte(mag, r, i))
 
 // Read an integer off the UART with the streaming scanner: four
@@ -56,7 +56,7 @@ fn scan_bytes() -> Int
     // A fixed input rather than a real read, so the probe is a build
     // question and not a hardware one.  What is being compiled is the
     // scanner's state machine.
-    for c in 0 .. 4
+    for c in 0..4
         s = s.push(48 + c)
     let done: IntParse = s.finish()
     if done.is_ok()

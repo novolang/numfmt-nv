@@ -24,7 +24,7 @@ fn integers(scratch: Bytes) -> Int
     var buf = scratch
     var total = 0
     let radices = [Dec, Bin, Oct, Hex, HexUpper]
-    for j in 0 .. radices.len()
+    for j in 0..radices.len()
         let r = radices[j]
         let plain = digits.fmt(r)
         let padded = digits.fmt(r).padded(24)

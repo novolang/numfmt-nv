@@ -176,7 +176,7 @@ fn is_upper(r: Radix) -> Bool
 // becomes the largest, and everything between keeps its place.
 @tier(embedded)
 fn ult(a: Int, b: Int) -> Bool
-    bits.xor(a, SIGN_BIT) < bits.xor(b, SIGN_BIT)
+    (a ^ SIGN_BIT) < (b ^ SIGN_BIT)
 
 // `u / base` with `u` read as unsigned.
 //
@@ -187,13 +187,13 @@ fn ult(a: Int, b: Int) -> Bool
 @tier(embedded)
 fn udiv(u: Int, base: Int) -> Int
     if base == 10
-        bits.shr(u, 1) / 5
+        (u >>> 1) / 5
     else if base == 16
-        bits.shr(u, 4)
+        u >>> 4
     else if base == 8
-        bits.shr(u, 3)
+        u >>> 3
     else
-        bits.shr(u, 1)
+        u >>> 1
 
 // `u % base` with `u` read as unsigned.
 //
@@ -205,7 +205,7 @@ fn umod(u: Int, base: Int) -> Int
     if base == 10
         int.wrapping_sub(u, int.wrapping_mul(udiv(u, 10), 10))
     else
-        bits.band(u, base - 1)
+        u & (base - 1)
 
 // The largest unsigned value that survives being multiplied by `base`.
 @tier(embedded)
@@ -243,7 +243,7 @@ fn digit_count(v: Int, r: Radix) -> Int
     // Sixty-four is the most digits any 64-bit value can take in any
     // of these bases (base 2), so the loop carries its own bound and
     // the tier checker can read it.
-    for _i in 0 .. 64
+    for _i in 0..64
         if rest == 0
             break
         rest = udiv(rest, base)
@@ -283,7 +283,7 @@ fn digit_byte(v: Int, r: Radix, i: Int) -> Int
     var rest = v
     // Digit `i` from the left is digit `n - 1 - i` from the right, so
     // shed that many from the right and read what is left standing.
-    for k in 0 .. 64
+    for k in 0..64
         if k >= n - 1 - i
             break
         rest = udiv(rest, base)
@@ -512,17 +512,17 @@ fn write_magnitude(dst: Bytes, off: Int, mag: Int, f: IntFormat, neg: Bool) -> B
         if neg
             buf = bytes.set_u8(buf, w, MINUS)
             w = w + 1
-        for _i in 0 .. pad
+        for _i in 0..pad
             buf = bytes.set_u8(buf, w, D_ZERO)
             w = w + 1
     else
-        for _i in 0 .. pad
+        for _i in 0..pad
             buf = bytes.set_u8(buf, w, SPACE)
             w = w + 1
         if neg
             buf = bytes.set_u8(buf, w, MINUS)
             w = w + 1
-    for i in 0 .. ndigits
+    for i in 0..ndigits
         buf = bytes.set_u8(buf, w, digit_byte(mag, r, i))
         w = w + 1
     buf
@@ -779,7 +779,7 @@ fn parse_uint(s: Str, r: Radix) -> IntParse
 fn parse_str(s: Str, r: Radix, signed: Bool) -> IntParse
     var sc = scan(r, signed)
     let n = str.len(s)
-    for i in 0 .. n
+    for i in 0..n
         sc = sc.push(str.byte_at(s, i) ?? -1)
     sc.finish()
 
@@ -800,6 +800,6 @@ fn parse_str(s: Str, r: Radix, signed: Bool) -> IntParse
 pub @tier(app)
 fn parse_int_bytes(b: Bytes, off: Int, n: Int, r: Radix, signed: Bool) -> IntParse
     var sc = scan(r, signed)
-    for i in 0 .. n
+    for i in 0..n
         sc = sc.push(bytes.byte_at(b, off + i) ?? -1)
     sc.finish()

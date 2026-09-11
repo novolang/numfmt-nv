@@ -111,7 +111,7 @@ fn test_shortest_against_cpython_repr_1() [io]
                 "0.00048828125", "0.00048828124999999995",
                 "0.0004882812500000001", "0.0009765625",
                 "0.0009765624999999999", "0.0009765625000000002"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.float_to_str(vals[k]), want[k])
 
@@ -193,7 +193,7 @@ fn test_shortest_against_cpython_repr_2() [io]
                 "16777216", "16777215.999999998",
                 "16777216.000000004", "33554432",
                 "33554431.999999996"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.float_to_str(vals[k]), want[k])
 
@@ -298,7 +298,7 @@ fn test_shortest_against_cpython_repr_3() [io]
                 "2.2604421803445222e-278", "-9.962349733387004e-241",
                 "3.2845633059794345e153", "-2.6966707905285114e-251",
                 "-3.6844069091556264e111"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.float_to_str(vals[k]), want[k])
 
@@ -408,7 +408,7 @@ fn test_shortest_against_cpython_repr_4() [io]
                 "-680000.8340082435", "-461660.72448345856",
                 "-658808.3174546955", "184982.93537626066",
                 "-966383.0544833587", "-80547.1070334001"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.float_to_str(vals[k]), want[k])
 
@@ -510,7 +510,7 @@ fn test_shortest_against_cpython_repr_5() [io]
                 "-700637.5846475363", "264411.04001356964",
                 "350862.96082863305", "-604140.7193452725",
                 "517331.21800765395", "924947.6463071918"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.float_to_str(vals[k]), want[k])
 
@@ -560,7 +560,7 @@ fn test_parse_round_trips_the_shortest_form_1() [io]
     // Formatting and reading back is the identity.  This
     // is the claim `shortest_into` is built on, and the
     // one it verifies for itself at every call.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         let text = numstr.float_to_str(vals[k])
         test.case(text)
         test.assert(real.parse_float(text).num == vals[k])
@@ -606,7 +606,7 @@ fn test_parse_round_trips_the_shortest_form_2() [io]
     // Formatting and reading back is the identity.  This
     // is the claim `shortest_into` is built on, and the
     // one it verifies for itself at every call.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         let text = numstr.float_to_str(vals[k])
         test.case(text)
         test.assert(real.parse_float(text).num == vals[k])
@@ -664,7 +664,7 @@ fn test_parse_round_trips_the_shortest_form_3() [io]
     // Formatting and reading back is the identity.  This
     // is the claim `shortest_into` is built on, and the
     // one it verifies for itself at every call.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         let text = numstr.float_to_str(vals[k])
         test.case(text)
         test.assert(real.parse_float(text).num == vals[k])
@@ -724,7 +724,7 @@ fn test_parse_round_trips_the_shortest_form_4() [io]
     // Formatting and reading back is the identity.  This
     // is the claim `shortest_into` is built on, and the
     // one it verifies for itself at every call.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         let text = numstr.float_to_str(vals[k])
         test.case(text)
         test.assert(real.parse_float(text).num == vals[k])
@@ -782,7 +782,7 @@ fn test_parse_round_trips_the_shortest_form_5() [io]
     // Formatting and reading back is the identity.  This
     // is the claim `shortest_into` is built on, and the
     // one it verifies for itself at every call.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         let text = numstr.float_to_str(vals[k])
         test.case(text)
         test.assert(real.parse_float(text).num == vals[k])
@@ -937,7 +937,7 @@ fn test_decomposition_against_cpython_frexp() [io]
                -39, -38, -37, -38, -37, -36, -37, -36, -35, -36, -35,
                -34, -35, -34]
     // |x| == sig * 2^exp, exactly, for every one of them.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(numstr.float_to_str(vals[k]))
         test.assert_eq(str.from_int(real.significand(vals[k])), str.from_int(sig[k]))
         test.assert_eq(str.from_int(real.binary_exponent(vals[k])), str.from_int(exp[k]))
@@ -1007,7 +1007,7 @@ fn test_fixed_0_decimals_against_cpython() [io]
                 "0", "0", "0", "0", "0", "0", "0", "0", "0", "0",
                 "0", "0", "0", "0", "0", "0", "0", "0", "1", "1",
                 "1", "2", "2"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.fixed_to_str(vals[k], 0), want[k])
 
@@ -1081,7 +1081,7 @@ fn test_fixed_1_decimals_against_cpython() [io]
                 "0.0", "0.1", "0.1", "0.1", "0.1", "0.1", "0.1",
                 "0.2", "0.2", "0.3", "0.5", "0.5", "1.0", "1.0",
                 "2.0", "2.0"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.fixed_to_str(vals[k], 1), want[k])
 
@@ -1158,7 +1158,7 @@ fn test_fixed_2_decimals_against_cpython() [io]
                 "0.06", "0.12", "0.12", "0.13", "0.25", "0.25",
                 "0.25", "0.50", "0.50", "1.00", "1.00", "2.00",
                 "2.00"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.fixed_to_str(vals[k], 2), want[k])
 
@@ -1245,7 +1245,7 @@ fn test_fixed_6_decimals_against_cpython() [io]
                 "0.250000", "0.250000", "0.250000", "0.500000",
                 "0.500000", "1.000000", "1.000000", "2.000000",
                 "2.000000"]
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.fixed_to_str(vals[k], 6), want[k])
 

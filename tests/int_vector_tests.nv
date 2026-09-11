@@ -135,7 +135,7 @@ fn test_signed_dec_against_cpython_1() [io]
                 "-68719476737", "-68719476736", "-68719476735",
                 "-34359738369"]
     // signed decimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -186,7 +186,7 @@ fn test_signed_dec_against_cpython_2() [io]
                 "100", "101", "127", "128", "129", "511", "512",
                 "513", "999", "1000"]
     // signed decimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -260,7 +260,7 @@ fn test_signed_dec_against_cpython_3() [io]
                 "4503599627370496", "4503599627370497",
                 "9007199254740991", "9007199254740992"]
     // signed decimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -353,7 +353,7 @@ fn test_signed_dec_against_cpython_4() [io]
                 "9107250176250854840", "9223372036854775806",
                 "9223372036854775807"]
     // signed decimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -474,7 +474,7 @@ fn test_unsigned_dec_against_cpython_1() [io]
                 "18446744004990074879", "18446744004990074880",
                 "18446744004990074881", "18446744039349813247"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -550,7 +550,7 @@ fn test_unsigned_dec_against_cpython_2() [io]
                 "17", "31", "32", "33", "99", "100", "101", "127",
                 "128", "129", "511", "512", "513", "999", "1000"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -624,7 +624,7 @@ fn test_unsigned_dec_against_cpython_3() [io]
                 "4503599627370496", "4503599627370497",
                 "9007199254740991", "9007199254740992"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -717,7 +717,7 @@ fn test_unsigned_dec_against_cpython_4() [io]
                 "9107250176250854840", "9223372036854775806",
                 "9223372036854775807"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Dec)), want[k])
 
@@ -898,7 +898,7 @@ fn test_signed_bin_against_cpython_1() [io]
                 "-111111111111111111111111111111111111",
                 "-100000000000000000000000000000000001"]
     // binary, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -986,7 +986,7 @@ fn test_signed_bin_against_cpython_2() [io]
                 "111111111", "1000000000", "1000000001",
                 "1111100111", "1111101000"]
     // binary, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1124,7 +1124,7 @@ fn test_signed_bin_against_cpython_3() [io]
                 "11111111111111111111111111111111111111111111111111111",
                 "100000000000000000000000000000000000000000000000000000"]
     // binary, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1259,7 +1259,7 @@ fn test_signed_bin_against_cpython_4() [io]
                 "111111111111111111111111111111111111111111111111111111111111110",
                 "111111111111111111111111111111111111111111111111111111111111111"]
     // binary, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1440,7 +1440,7 @@ fn test_unsigned_bin_against_cpython_1() [io]
                 "1111111111111111111111111111000000000000000000000000000000000001",
                 "1111111111111111111111111111011111111111111111111111111111111111"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1565,7 +1565,7 @@ fn test_unsigned_bin_against_cpython_2() [io]
                 "10000000", "10000001", "111111111", "1000000000",
                 "1000000001", "1111100111", "1111101000"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1703,7 +1703,7 @@ fn test_unsigned_bin_against_cpython_3() [io]
                 "11111111111111111111111111111111111111111111111111111",
                 "100000000000000000000000000000000000000000000000000000"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1838,7 +1838,7 @@ fn test_unsigned_bin_against_cpython_4() [io]
                 "111111111111111111111111111111111111111111111111111111111111110",
                 "111111111111111111111111111111111111111111111111111111111111111"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Bin)), want[k])
 
@@ -1958,7 +1958,7 @@ fn test_signed_oct_against_cpython_1() [io]
                 "-1000000000001", "-1000000000000", "-777777777777",
                 "-400000000001"]
     // octal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2010,7 +2010,7 @@ fn test_signed_oct_against_cpython_2() [io]
                 "144", "145", "177", "200", "201", "777", "1000",
                 "1001", "1747", "1750"]
     // octal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2087,7 +2087,7 @@ fn test_signed_oct_against_cpython_3() [io]
                 "200000000000000000", "200000000000000001",
                 "377777777777777777", "400000000000000000"]
     // octal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2180,7 +2180,7 @@ fn test_signed_oct_against_cpython_4() [io]
                 "771433474416402736670", "777777777777777777776",
                 "777777777777777777777"]
     // octal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2301,7 +2301,7 @@ fn test_unsigned_oct_against_cpython_1() [io]
                 "1777777776777777777777", "1777777777000000000000",
                 "1777777777000000000001", "1777777777377777777777"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2378,7 +2378,7 @@ fn test_unsigned_oct_against_cpython_2() [io]
                 "145", "177", "200", "201", "777", "1000", "1001",
                 "1747", "1750"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2455,7 +2455,7 @@ fn test_unsigned_oct_against_cpython_3() [io]
                 "200000000000000000", "200000000000000001",
                 "377777777777777777", "400000000000000000"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2548,7 +2548,7 @@ fn test_unsigned_oct_against_cpython_4() [io]
                 "771433474416402736670", "777777777777777777776",
                 "777777777777777777777"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Oct)), want[k])
 
@@ -2662,7 +2662,7 @@ fn test_signed_hex_against_cpython_1() [io]
                 "-1000000001", "-1000000000", "-fffffffff",
                 "-800000001"]
     // lower-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -2710,7 +2710,7 @@ fn test_signed_hex_against_cpython_2() [io]
                 "10", "11", "1f", "20", "21", "63", "64", "65", "7f",
                 "80", "81", "1ff", "200", "201", "3e7", "3e8"]
     // lower-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -2778,7 +2778,7 @@ fn test_signed_hex_against_cpython_3() [io]
                 "8000000000001", "fffffffffffff", "10000000000000",
                 "10000000000001", "1fffffffffffff", "20000000000000"]
     // lower-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -2870,7 +2870,7 @@ fn test_signed_hex_against_cpython_4() [io]
                 "7e6373c8740bbdb8", "7ffffffffffffffe",
                 "7fffffffffffffff"]
     // lower-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -2991,7 +2991,7 @@ fn test_unsigned_hex_against_cpython_1() [io]
                 "ffffffefffffffff", "fffffff000000000",
                 "fffffff000000001", "fffffff7ffffffff"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -3067,7 +3067,7 @@ fn test_unsigned_hex_against_cpython_2() [io]
                 "1f", "20", "21", "63", "64", "65", "7f", "80", "81",
                 "1ff", "200", "201", "3e7", "3e8"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -3135,7 +3135,7 @@ fn test_unsigned_hex_against_cpython_3() [io]
                 "8000000000001", "fffffffffffff", "10000000000000",
                 "10000000000001", "1fffffffffffff", "20000000000000"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -3227,7 +3227,7 @@ fn test_unsigned_hex_against_cpython_4() [io]
                 "7e6373c8740bbdb8", "7ffffffffffffffe",
                 "7fffffffffffffff"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(Hex)), want[k])
 
@@ -3341,7 +3341,7 @@ fn test_signed_hexupper_against_cpython_1() [io]
                 "-1000000001", "-1000000000", "-FFFFFFFFF",
                 "-800000001"]
     // upper-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3389,7 +3389,7 @@ fn test_signed_hexupper_against_cpython_2() [io]
                 "10", "11", "1F", "20", "21", "63", "64", "65", "7F",
                 "80", "81", "1FF", "200", "201", "3E7", "3E8"]
     // upper-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3457,7 +3457,7 @@ fn test_signed_hexupper_against_cpython_3() [io]
                 "8000000000001", "FFFFFFFFFFFFF", "10000000000000",
                 "10000000000001", "1FFFFFFFFFFFFF", "20000000000000"]
     // upper-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3549,7 +3549,7 @@ fn test_signed_hexupper_against_cpython_4() [io]
                 "7E6373C8740BBDB8", "7FFFFFFFFFFFFFFE",
                 "7FFFFFFFFFFFFFFF"]
     // upper-case hexadecimal, as CPython writes it.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.int_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3670,7 +3670,7 @@ fn test_unsigned_hexupper_against_cpython_1() [io]
                 "FFFFFFEFFFFFFFFF", "FFFFFFF000000000",
                 "FFFFFFF000000001", "FFFFFFF7FFFFFFFF"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3746,7 +3746,7 @@ fn test_unsigned_hexupper_against_cpython_2() [io]
                 "1F", "20", "21", "63", "64", "65", "7F", "80", "81",
                 "1FF", "200", "201", "3E7", "3E8"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3814,7 +3814,7 @@ fn test_unsigned_hexupper_against_cpython_3() [io]
                 "8000000000001", "FFFFFFFFFFFFF", "10000000000000",
                 "10000000000001", "1FFFFFFFFFFFFF", "20000000000000"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(HexUpper)), want[k])
 
@@ -3906,6 +3906,6 @@ fn test_unsigned_hexupper_against_cpython_4() [io]
                 "7E6373C8740BBDB8", "7FFFFFFFFFFFFFFE",
                 "7FFFFFFFFFFFFFFF"]
     // The same 64 bits read as unsigned.
-    for k in 0 .. vals.len()
+    for k in 0..vals.len()
         test.case(want[k])
         test.assert_eq(numstr.uint_to_str(vals[k], digits.fmt(HexUpper)), want[k])

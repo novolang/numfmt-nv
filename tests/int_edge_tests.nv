@@ -61,8 +61,8 @@ fn test_the_length_promised_is_the_length_written() [io]
     let forms = [digits.fmt(Dec), digits.fmt(Bin), digits.fmt(Oct),
                  digits.fmt(Hex), digits.fmt(HexUpper),
                  digits.fmt(Dec).padded(12), digits.fmt(Hex).zero_padded(16)]
-    for i in 0 .. vals.len()
-        for j in 0 .. forms.len()
+    for i in 0..vals.len()
+        for j in 0..forms.len()
             let v = vals[i]
             let f = forms[j]
             test.case(str.from_int(v))
@@ -122,7 +122,7 @@ fn test_digit_byte_walks_the_number_from_the_left() [io]
     // The firmware form: no buffer at all, one byte at a time.
     let n = 90210
     var text = ""
-    for i in 0 .. digits.digit_count(n, Dec)
+    for i in 0..digits.digit_count(n, Dec)
         text = text + str.from_char(digits.digit_byte(n, Dec, i))
     test.case("reassembled from single digits")
     test.assert_eq(text, "90210")
@@ -291,7 +291,7 @@ fn test_the_scanner_reads_a_byte_at_a_time() [io]
     // stack, and an answer whenever it is asked for one.
     var s = digits.scan(Dec, true)
     let text = "-1234"
-    for i in 0 .. str.len(text)
+    for i in 0..str.len(text)
         s = s.push(str.byte_at(text, i) ?? -1)
     test.case("the whole number")
     test.assert(s.finish().is_ok())
@@ -304,7 +304,7 @@ fn test_the_scanner_answers_at_every_prefix() [io]
     var s = digits.scan(Dec, false)
     let want = ["1", "12", "123"]
     let text = "123"
-    for i in 0 .. str.len(text)
+    for i in 0..str.len(text)
         s = s.push(str.byte_at(text, i) ?? -1)
         test.case(want[i])
         test.assert_eq(str.from_int(s.finish().num), want[i])
@@ -315,7 +315,7 @@ fn test_the_first_error_sticks() [io]
     // checking after every byte.
     var s = digits.scan(Dec, true)
     let text = "1x23"
-    for i in 0 .. str.len(text)
+    for i in 0..str.len(text)
         s = s.push(str.byte_at(text, i) ?? -1)
     test.case("still the first failure")
     test.assert(not s.is_ok())
@@ -346,8 +346,8 @@ fn test_format_parse_format_is_the_identity() [io]
                 1000000000, -1000000000, 4611686018427387904,
                 9223372036854775807, -9223372036854775808, -2]
     let radices = [Dec, Bin, Oct, Hex, HexUpper]
-    for i in 0 .. vals.len()
-        for j in 0 .. radices.len()
+    for i in 0..vals.len()
+        for j in 0..radices.len()
             let v = vals[i]
             let r = radices[j]
             let f = digits.fmt(r)
