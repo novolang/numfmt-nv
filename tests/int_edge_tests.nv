@@ -118,6 +118,52 @@ fn test_the_writers_write_where_they_are_told() [io]
     test.assert_eq(bytes.to_str(buf), "id=0042;ok\n")
 
 @test
+fn test_int_into_puts_the_sign_where_the_padding_leaves_room_for_it() [io]
+    // The signed writer is the one with a sign to place, and where the
+    // sign goes depends on which padding is in play: a zero pad sits
+    // BETWEEN the sign and the digits, because `0-42` is not a number,
+    // and a space pad sits before the sign, because that is what
+    // right-aligning a column means.
+    let plain = digits.fmt(Dec)
+    let spaced = digits.fmt(Dec).padded(6)
+    let zeroed = digits.fmt(Dec).zero_padded(6)
+    test.case("negative, unpadded")
+    test.assert_eq(into(-42, plain), "-42")
+    test.case("negative, space padded — the pad comes before the sign")
+    test.assert_eq(into(-42, spaced), "   -42")
+    test.case("negative, zero padded — the pad comes after it")
+    test.assert_eq(into(-42, zeroed), "-00042")
+    test.case("a positive value takes no sign, and the width is the same")
+    test.assert_eq(into(42, spaced), "    42")
+    test.assert_eq(into(42, zeroed), "000042")
+    test.case("a width narrower than the number is ignored, not truncated")
+    test.assert_eq(into(-123456789, digits.fmt(Dec).padded(3)), "-123456789")
+
+@test
+fn test_int_into_writes_the_text_the_str_builder_returns() [io]
+    // `numstr.int_to_str` allocates the answer; `int_into` writes it
+    // into a buffer the caller sized with `int_len`.  Two spellings of
+    // one formatter, so they have to agree — at the boundaries a digit
+    // count turns on, and at the value with no positive magnitude.
+    let plain = digits.fmt(Dec)
+    let zeroed = digits.fmt(Dec).zero_padded(12)
+    for v in [0, 1, -1, 9, 10, 99, 100, 999, 1000, -1000,
+              9223372036854775807, -9223372036854775808]
+        test.case(numstr.int_to_str(v, plain))
+        test.assert_eq(into(v, plain), numstr.int_to_str(v, plain))
+        test.assert_eq(into(v, zeroed), numstr.int_to_str(v, zeroed))
+
+@test
+fn test_int_into_lands_at_the_offset_and_leaves_the_rest_alone() [io]
+    // The signed twin of the unsigned case above: a frame the caller
+    // already owns, with a negative number dropped into the middle.
+    var buf = bytes.zeros(11)
+    buf = bytes.copy_into(buf, 0, bytes.from_str("id=____;ok\n"), 0, 11)
+    buf = digits.int_into(buf, 3, -42, digits.fmt(Dec).zero_padded(4))
+    test.case("the sign and the digits landed at the offset")
+    test.assert_eq(bytes.to_str(buf), "id=-042;ok\n")
+
+@test
 fn test_digit_byte_walks_the_number_from_the_left() [io]
     // The firmware form: no buffer at all, one byte at a time.
     let n = 90210
@@ -370,3 +416,9 @@ fn test_a_padded_format_still_parses_when_the_padding_is_zeros() [io]
     test.case("space-padded does not, and names the space")
     let padded = numstr.int_to_str(-42, digits.fmt(Dec).padded(8))
     test.assert(not digits.parse_int(padded, Dec).is_ok())
+
+// `int_into` into a buffer sized by `int_len`, read back as text — the
+// two calls a caller with its own memory makes, in the order it makes
+// them.
+fn into(v: Int, f: IntFormat) -> Str
+    bytes.to_str(digits.int_into(bytes.zeros(digits.int_len(v, f)), 0, v, f))
